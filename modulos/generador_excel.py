@@ -3,6 +3,24 @@ import re
 from fpdf import FPDF
 import os
 from datetime import datetime
+import calendar
+
+# =====================================================================
+# ESCUDO ANTIBALAS PARA CARACTERES RAROS (EVITA CRASHES DEL PDF)
+# =====================================================================
+def sanear_texto(txt):
+    if pd.isna(txt) or txt is None: return ""
+    txt = str(txt)
+    # Reemplaza guiones y comillas de Word por caracteres estándar ASCII
+    txt = txt.replace('–', '-').replace('—', '-') 
+    txt = txt.replace('“', '"').replace('”', '"')
+    txt = txt.replace('‘', "'").replace('’', "'")
+    # Fuerza codificación compatible con la fuente Helvetica (Latin-1)
+    return txt.encode('latin-1', 'ignore').decode('latin-1')import pandas as pd
+import re
+from fpdf import FPDF
+import os
+from datetime import datetime
 from collections import defaultdict
 
 # =====================================================================
