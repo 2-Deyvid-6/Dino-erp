@@ -63,80 +63,104 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
     
     if archivo_samm is not None:
         try:
-            df_maestro_actual = st.session_state['df_base_maestra']
-            dict_tercero = dict(zip(df_maestro_actual['equipo'].astype(str).str.strip(), df_maestro_actual['Tercero']))
-            dict_sucursal = dict(zip(df_maestro_actual['equipo'].astype(str).str.strip(), df_maestro_actual['Sucursal']))
+            df_maestro_actual = st.session_state['df_base_maestra'].copy()
+            
+            # --- NORMALIZADOR UNIVERSAL DE IDs (FRANCOTIRADOR DE CORCHETES) ---
+            def normalizar_id_universal(val):
+                val_str = str(val).strip()
+                match = re.search(r'\[\s*(\d+)\s*\]', val_str)
+                if match: return match.group(1)
+                if val_str.endswith('.0'): return val_str[:-2]
+                return val_str
+                
+            df_maestro_actual['equipo_clean'] = df_maestro_actual['equipo'].apply(normalizar_id_universal)
+            
+            # --- DICCIONARIOS BLINDADOS ---
+            claves_maestro = df_maestro_actual['equipo_clean'].astype(str).str.strip()
+            dict_tercero = dict(zip(claves_maestro, df_maestro_actual['Tercero']))
+            
+            # PRIORIDAD ESTRICTA A LA SUCURSAL
+            col_ubi = 'Sucursal' if 'Sucursal' in df_maestro_actual.columns else 'sucursal' if 'sucursal' in df_maestro_actual.columns else 'Ubicacion'
+            dict_sucursal = dict(zip(claves_maestro, df_maestro_actual[col_ubi].astype(str).str.strip()))
 
             if 'df_master' not in st.session_state or st.session_state.get('nombre_archivo') != archivo_samm.name:
                 df_crudo = limpiar_reporte_samm(archivo_samm)
                 
-                def normalizar_id_auditoria(val):
-                    import re
-                    val_str = str(val)
-                    match = re.search(r'\[\s*(\d+)\s*\]', val_str)
-                    if match: return match.group(1)
-                    val_str = val_str.strip()
-                    if val_str.endswith('.0'): return val_str[:-2]
-                    return val_str
+                # --- LIMPIEZA GLOBAL INMEDIATA DE SERIALES ---
+                df_crudo['Equipo'] = df_crudo['Equipo'].apply(normalizar_id_universal)
+                
+                # INICIALIZAR MEMORIA DE IGNORADOS
+                if 'equipos_ignorados' not in st.session_state:
+                    st.session_state['equipos_ignorados'] = set()
 
+                # --- AUDITORÍA ESTRICTA (CLIENTE SAMM vs TERCERO MAESTRO) ---
                 def auditar_contra_maestro(row):
-                    equipo = normalizar_id_auditoria(row['Equipo'])
+                    equipo = str(row['Equipo']).strip() 
+                    if equipo in st.session_state['equipos_ignorados']:
+                        return "VERDE"
+                        
                     cliente_samm = str(row['Cliente']).upper().strip()
+                    tercero_maestro_raw = dict_tercero.get(equipo)
                     
-                    # Validación PROFESIONAL de nulos
-                    tercero_real_raw = dict_tercero.get(equipo)
-                    if pd.isna(tercero_real_raw) or str(tercero_real_raw).strip() == "" or str(tercero_real_raw).strip().upper() == "NAN": 
+                    if pd.isna(tercero_maestro_raw) or str(tercero_maestro_raw).strip() == "" or str(tercero_maestro_raw).strip().upper() in ["NAN", "SIN_ASIGNAR"]: 
                         return "VERDE" 
                         
-                    tercero_real = str(tercero_real_raw).upper().strip()
-                    if cliente_samm not in tercero_real and tercero_real not in cliente_samm: 
+                    tercero_maestro = str(tercero_maestro_raw).upper().strip()
+                    
+                    if cliente_samm not in tercero_maestro and tercero_maestro not in cliente_samm: 
                         return "ROJO" 
                     return "VERDE"
                     
                 df_crudo['Alerta_Auditoria'] = df_crudo.apply(auditar_contra_maestro, axis=1)
 
-                # ========================================================
-                # NUEVO: MOTOR DE AGRUPACIÓN LOGÍSTICA (CLUSTERING 3 DÍAS)
-                # ========================================================
-                def optimizar_fechas_por_sucursal(df):
+                # --- MOTOR DE AGRUPACIÓN LOGÍSTICA (SEMANA ISO + BALDES DE 4) ---
+                def optimizar_fechas_por_sucursal_y_cupos(df):
                     df_opt = df.copy()
                     df_opt['Fecha_DT'] = pd.to_datetime(df_opt['Fecha_Visita'].astype(str).str.split(" ").str[0], dayfirst=True, errors='coerce')
                     
-                    cambios_realizados = 0
-                    grupos = df_opt.groupby(['Cliente', 'Sucursal'])
+                    # Agrupar por la sucursal exacta del Excel Maestro
+                    df_opt['Sucursal_Maestra'] = df_opt['Equipo'].apply(lambda x: dict_sucursal.get(x, "SIN_SUCURSAL")).astype(str).str.upper().str.strip()
+                    df_opt['Semana'] = df_opt['Fecha_DT'].dt.isocalendar().week
+                    df_opt['Año'] = df_opt['Fecha_DT'].dt.isocalendar().year
                     
-                    for (cliente, sucursal), grupo in grupos:
-                        if pd.isna(sucursal) or str(sucursal).strip() == "" or str(sucursal).upper() == "NAN": continue
+                    cambios_realizados = 0
+                    grupos = df_opt.groupby(['Cliente', 'Sucursal_Maestra', 'Año', 'Semana'])
+                    
+                    for (cliente, sucursal, anio, semana), grupo in grupos:
+                        if pd.isna(semana) or sucursal in ["SIN_SUCURSAL", "NAN", ""]: continue
                         
                         if len(grupo) > 1:
+                            dias_disponibles = sorted(grupo['Fecha_DT'].dropna().unique())
+                            if not dias_disponibles: continue
+                            
                             grupo_ordenado = grupo.sort_values('Fecha_DT')
-                            fecha_base = None
-                            fecha_base_str = None
+                            idx_dia = 0
+                            cupo_actual = 0
                             
                             for idx, row in grupo_ordenado.iterrows():
                                 if pd.isna(row['Fecha_DT']): continue
                                 
-                                if fecha_base is None:
-                                    fecha_base = row['Fecha_DT']
-                                    fecha_base_str = str(df_opt.at[idx, 'Fecha_Visita'])
-                                    continue
-                                    
-                                diferencia = (row['Fecha_DT'] - fecha_base).days
+                                dia_asignar = dias_disponibles[idx_dia]
                                 
-                                if 0 < diferencia <= 3:
-                                    df_opt.at[idx, 'Fecha_Visita'] = fecha_base_str
+                                if row['Fecha_DT'] != dia_asignar:
+                                    df_opt.at[idx, 'Fecha_Visita'] = dia_asignar.strftime("%d/%m/%Y")
+                                    df_opt.at[idx, 'Fecha_DT'] = dia_asignar
                                     cambios_realizados += 1
-                                elif diferencia > 3:
-                                    fecha_base = row['Fecha_DT']
-                                    fecha_base_str = str(df_opt.at[idx, 'Fecha_Visita'])
                                     
-                    df_opt = df_opt.drop(columns=['Fecha_DT'])
+                                cupo_actual += 1
+                                # Llena el balde de 4, pasa al siguiente día que YA ESTABA AGENDADO
+                                if cupo_actual >= 4:
+                                    cupo_actual = 0
+                                    if idx_dia < len(dias_disponibles) - 1:
+                                        idx_dia += 1
+
+                    df_opt = df_opt.drop(columns=['Fecha_DT', 'Sucursal_Maestra', 'Semana', 'Año'])
                     return df_opt, cambios_realizados
 
-                df_crudo, total_optimizados = optimizar_fechas_por_sucursal(df_crudo)
+                df_crudo, total_optimizados = optimizar_fechas_por_sucursal_y_cupos(df_crudo)
                 
                 if total_optimizados > 0:
-                    st.toast(f"Clustering Activo: Se unificaron automáticamente {total_optimizados} visitas en las mismas sucursales (Margen: 3 días).", icon="🚜")
+                    st.toast(f"🚜 Logística Activa: {total_optimizados} visitas organizadas en baldes de 4 por semana.", icon="🚜")
 
                 st.session_state['df_master'] = df_crudo
                 st.session_state['nombre_archivo'] = archivo_samm.name
@@ -165,10 +189,10 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
             
             with tab_buscador:
                 st.subheader("Radiografía por Equipo")
-                lista_equipos = sorted(df_limpio['Equipo'].astype(str).unique())
+                lista_equipos = sorted(df_limpio['Equipo'].unique())
                 equipo_buscado = st.selectbox("Selecciona el Equipo:", options=["Seleccionar..."] + lista_equipos)
                 if equipo_buscado != "Seleccionar...":
-                    df_equipo = df_limpio[df_limpio['Equipo'].astype(str) == equipo_buscado].sort_values(by="Fecha_Visita")
+                    df_equipo = df_limpio[df_limpio['Equipo'] == equipo_buscado].sort_values(by="Fecha_Visita")
                     c1, c2, c3 = st.columns(3)
                     c1.info(f"**🏢 Cliente:**\n{df_equipo['Cliente'].iloc[0]}")
                     c2.info(f"**📍 Ubicación:**\n{df_equipo['Sucursal'].iloc[0]}")
@@ -176,42 +200,41 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                     st.dataframe(df_equipo[['Fecha_Visita', 'Mantenimiento', 'OT', 'Estado']], use_container_width=True, hide_index=True)
             
             with tab_datos:
-                st.subheader("Auditoría Global de la Flota (Filtro para Comercial)")
-                df_anomalias = df_limpio[df_limpio['Alerta_Auditoria'] == 'ROJO'].drop_duplicates(subset=['Equipo', 'Cliente', 'Sucursal']).copy()
+                st.subheader("Auditoría Global de la Flota (Filtro Comercial)")
+                df_anomalias = df_limpio[df_limpio['Alerta_Auditoria'] == 'ROJO'].drop_duplicates(subset=['Equipo', 'Cliente']).copy()
                 
                 if not df_anomalias.empty:
-                    df_reporte_base = df_anomalias[['Equipo', 'Cliente', 'Sucursal', 'Estado', 'Mantenimiento']].rename(columns={'Cliente': 'Contrato en SAMM', 'Sucursal': 'Ubicación Física Real'})
-                    df_reporte_base.insert(0, '✅ Es Sucursal Válida', False)
-                    df_editado = st.data_editor(df_reporte_base, hide_index=True, use_container_width=True, disabled=['Equipo', 'Contrato en SAMM', 'Ubicación Física Real', 'Estado', 'Mantenimiento'])
+                    st.warning(f"🚨 Hay {len(df_anomalias)} anomalías en toda la flota (Cliente en SAMM vs Tercero en Maestro).")
+                    st.dataframe(df_anomalias[['Equipo', 'Cliente', 'Sucursal', 'Estado', 'Mantenimiento']], hide_index=True, use_container_width=True)
                     
-                    df_errores_reales = df_editado[df_editado['✅ Es Sucursal Válida'] == False].drop(columns=['✅ Es Sucursal Válida'])
-                    col_a, col_b = st.columns([2, 1])
-                    col_a.warning(f"Exportando {len(df_errores_reales)} errores.")
-                    with col_b:
-                        buffer = io.BytesIO()
-                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                            df_errores_reales.to_excel(writer, sheet_name='Anomalias', index=False)
-                        st.download_button("📥 Descargar Reporte Depurado", buffer.getvalue(), "Anomalias.xlsx", "application/vnd.ms-excel", type="primary")
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                        df_anomalias.to_excel(writer, sheet_name='Anomalias', index=False)
+                    st.download_button("📥 Descargar Reporte Global", buffer.getvalue(), "Anomalias.xlsx", "application/vnd.ms-excel", type="primary")
                 else:
-                    st.success("✅ No hay anomalías de ubicación.")
+                    st.success("✅ Toda la flota operativa coincide correctamente con el Excel Maestro.")
+                    
+                st.write("---")
+                
+                # --- NUEVA ALERTA GLOBAL: VISITAS DUPLICADAS ---
+                st.subheader("📌 Equipos con Múltiples Visitas el Mismo Día")
+                df_global_multiples = df_limpio.groupby(['Cliente', 'Equipo', 'Fecha_Visita']).size().reset_index(name='Cantidad_Visitas')
+                df_global_multiples = df_global_multiples[df_global_multiples['Cantidad_Visitas'] > 1]
+                
+                if not df_global_multiples.empty:
+                    st.info(f"Se detectaron {len(df_global_multiples)} casos de equipos con más de una visita programada para la misma fecha.")
+                    st.dataframe(df_global_multiples, hide_index=True)
+                else:
+                    st.success("✅ No hay visitas duplicadas para el mismo día en la flota.")
                     
                 st.write("---")
     
                 st.subheader("🚨 Equipos Sin Cronograma de Mantenimiento")
-                df_maestro = st.session_state['df_base_maestra']
                 
-                def normalizar_id(val):
-                    val_str = str(val)
-                    match = re.search(r'\[\s*(\d+)\s*\]', val_str)
-                    if match: return match.group(1)
-                    val_str = val_str.strip()
-                    if val_str.endswith('.0'): return val_str[:-2]
-                    return val_str
-                
-                equipos_en_samm = df_limpio['Equipo'].apply(normalizar_id).unique()
-                df_maestro['equipo_str'] = df_maestro['equipo'].apply(normalizar_id)
-                df_faltantes = df_maestro[~df_maestro['equipo_str'].isin(equipos_en_samm)]
-                df_faltantes_mostrar = df_faltantes[['equipo', 'Tercero', 'Sucursal', 'Modelo', 'Horometro Actual']].dropna(subset=['Tercero'])
+                equipos_en_samm = df_limpio['Equipo'].unique()
+                df_faltantes = df_maestro_actual[~df_maestro_actual['equipo_clean'].isin(equipos_en_samm)]
+                df_faltantes_mostrar = df_faltantes[['equipo_clean', 'Tercero', col_ubi, 'Modelo', 'Horometro Actual']].dropna(subset=['Tercero'])
+                df_faltantes_mostrar.rename(columns={'equipo_clean': 'equipo'}, inplace=True)
                 
                 if not df_faltantes_mostrar.empty:
                     st.warning(f"{len(df_faltantes_mostrar)} equipos sin visita programada.")
@@ -236,15 +259,12 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
 
                     st.download_button("📄 Descargar Informe (Word)", generar_word_faltantes(df_word), "Equipos_Faltantes.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
                     
-                    # =========================================================
-                    # PROGRAMADOR MANUAL PARA EQUIPOS HUÉRFANOS
-                    # =========================================================
                     st.write("---")
                     with st.expander("🛠️ Asignar a un Cronograma (Modo Manual Temporal)"):
                         st.info("Inyecta equipos huérfanos directamente al cronograma de un cliente en memoria.")
                         
                         col_eq, col_cli = st.columns(2)
-                        lista_huerfanos = sorted(df_faltantes_mostrar['equipo'].astype(str).unique())
+                        lista_huerfanos = sorted(df_faltantes_mostrar['equipo'].unique())
                         
                         eq_manual = col_eq.selectbox("1. Equipo sin proyección:", lista_huerfanos)
                         
@@ -272,8 +292,8 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                             elif not fechas_ingresadas[0] or fechas_ingresadas[0].strip() == "":
                                 st.error("⚠️ Debes ingresar obligatoriamente la primera fecha.")
                             else:
-                                info_eq = df_faltantes_mostrar[df_faltantes_mostrar['equipo'].astype(str) == eq_manual].iloc[0]
-                                sucursal_eq = info_eq['Sucursal'] if pd.notna(info_eq['Sucursal']) else "SIN SUCURSAL"
+                                info_eq = df_faltantes_mostrar[df_faltantes_mostrar['equipo'] == eq_manual].iloc[0]
+                                sucursal_eq = info_eq.iloc[2] if pd.notna(info_eq.iloc[2]) else "SIN SUCURSAL"
                                 
                                 nuevas_filas = []
                                 for fecha in fechas_ingresadas:
@@ -292,7 +312,6 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                                 
                                 df_nuevas = pd.DataFrame(nuevas_filas)
                                 st.session_state['df_master'] = pd.concat([st.session_state['df_master'], df_nuevas], ignore_index=True)
-                                
                                 st.success(f"✅ ¡Equipo {eq_manual} inyectado exitosamente al contrato {cli_destino.upper()}!")
                                 st.rerun()
                 else:
@@ -303,70 +322,102 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                 clientes_unicos = sorted(df_limpio['Cliente'].unique())
                 opciones_selector = [f"👀 {c}" if 'ROJO' in df_limpio[df_limpio['Cliente'] == c]['Alerta_Auditoria'].values else c for c in clientes_unicos]
                 
-                cliente_seleccionado = st.selectbox("Cliente:", opciones_selector).replace("👀 ", "")
+                # --- MEMORIA DE POSICIÓN ---
+                indice_guardado = 0
+                if 'ultimo_cliente' in st.session_state:
+                    for i, op in enumerate(opciones_selector):
+                        if op.replace("👀 ", "") == st.session_state['ultimo_cliente']:
+                            indice_guardado = i
+                            break
+                            
+                cliente_raw = st.selectbox("Cliente:", opciones_selector, index=indice_guardado)
+                cliente_seleccionado = cliente_raw.replace("👀 ", "")
+                st.session_state['ultimo_cliente'] = cliente_seleccionado
+                # ---------------------------
+                
                 df_filtrado = df_limpio[df_limpio['Cliente'] == cliente_seleccionado]
                 alertas_rojas = df_filtrado[df_filtrado['Alerta_Auditoria'] == 'ROJO']
                 
                 if not alertas_rojas.empty:
-                    st.warning("👀 REVISIÓN SUGERIDA: Ubicaciones erróneas detectadas en este cliente.")
-                    st.dataframe(alertas_rojas[['Equipo', 'Cliente', 'Sucursal']].drop_duplicates(), hide_index=True)
+                    st.warning("👀 REVISIÓN SUGERIDA: Conflicto entre Contrato SAMM y Tercero Maestro.")
                     
-                # --- NUEVO: CREADOR DE CONTRATOS FANTASMA Y REASIGNACIÓN ---
-                with st.expander("🛠️ Reasignar Equipo o Crear Nuevo Contrato (Manual)"):
-                    st.info("💡 Mueve un equipo a otro cliente o crea un contrato temporal para agrupar equipos sin contrato en SAMM.")
-                    c_eq, c_dst = st.columns(2)
+                    df_alertas_cli = alertas_rojas[['Equipo', 'Cliente', 'Sucursal']].drop_duplicates().copy()
+                    df_alertas_cli.insert(0, '✅ Seleccionar', False)
                     
-                    todos_los_equipos = sorted(df_limpio['Equipo'].unique())
-                    eq_mover = c_eq.selectbox("1. Equipo a mover:", todos_los_equipos)
+                    st.info("💡 Selecciona los equipos en la tabla y elige la acción abajo.")
+                    df_editado_cli = st.data_editor(df_alertas_cli, hide_index=True, use_container_width=True, disabled=['Equipo', 'Cliente', 'Sucursal'])
+                    df_seleccionados = df_editado_cli[df_editado_cli['✅ Seleccionar'] == True]
                     
-                    tipo_dest = c_dst.radio("2. Tipo de asignación:", ["A un Cliente Existente", "Crear NUEVO Contrato"])
-                    
-                    if tipo_dest == "A un Cliente Existente":
-                        dst = c_dst.selectbox("3. Selecciona el destino:", clientes_unicos)
-                    else:
-                        dst = c_dst.text_input("3. Escribe el nombre del nuevo contrato:")
+                    # --- PANEL DE ACCIÓN RÁPIDA (DESPLEGABLES ESTABLES) ---
+                    st.markdown("### 🛠️ Panel de Acción Rápida")
+                    if not df_seleccionados.empty:
+                        equipos_afectados = df_seleccionados['Equipo'].tolist()
                         
-                    if st.button("🔄 Aplicar Cambio y Mover Equipo", type="primary"):
-                        if dst and dst.strip() != "":
-                            nuevo_cliente = dst.strip().upper()
-                            st.session_state['df_master'].loc[st.session_state['df_master']['Equipo'] == eq_mover, 'Cliente'] = nuevo_cliente
+                        def ejecutar_reasignacion(nuevo_cliente_destino):
+                            mascara_mover = st.session_state['df_master']['Equipo'].isin(equipos_afectados)
+                            st.session_state['df_master'].loc[mascara_mover, 'Cliente'] = nuevo_cliente_destino
                             
                             def re_auditar(row):
-                                # 1. Traductor Inyectado
-                                import re
-                                val_str = str(row['Equipo'])
-                                match = re.search(r'\[\s*(\d+)\s*\]', val_str)
-                                eq_s = match.group(1) if match else val_str.strip()
-                                if eq_s.endswith('.0'): eq_s = eq_s[:-2]
-                                
-                                # 2. Validación PROFESIONAL de nulos
-                                c_samm = str(row['Cliente']).upper().strip()
-                                tercero_real_raw = dict_tercero.get(eq_s)
-                                
-                                if pd.isna(tercero_real_raw) or str(tercero_real_raw).strip() == "" or str(tercero_real_raw).strip().upper() == "NAN":
+                                eq_s = str(row['Equipo']).strip()
+                                if eq_s in st.session_state.get('equipos_ignorados', set()): return "VERDE"
+                                cliente_samm = str(row['Cliente']).upper().strip()
+                                tercero_maestro_raw = dict_tercero.get(eq_s)
+                                if pd.isna(tercero_maestro_raw) or str(tercero_maestro_raw).strip() == "" or str(tercero_maestro_raw).strip().upper() in ["NAN", "SIN_ASIGNAR"]: 
                                     return "VERDE"
-                                    
-                                t_real = str(tercero_real_raw).upper().strip()
-                                if c_samm not in t_real and t_real not in c_samm: 
-                                    return "ROJO"
+                                tercero_maestro = str(tercero_maestro_raw).upper().strip()
+                                if cliente_samm not in tercero_maestro and tercero_maestro not in cliente_samm: return "ROJO"
                                 return "VERDE"
                                 
-                            # Re-evaluamos toda la flota y refrescamos la pantalla
                             st.session_state['df_master']['Alerta_Auditoria'] = st.session_state['df_master'].apply(re_auditar, axis=1)
                             st.rerun()
-                        else:
-                            st.error("⚠️ Debes especificar un destino válido.")
+
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            if st.button("✅ Ignorar y Aprobar (Lista Blanca)", type="primary", use_container_width=True):
+                                if 'equipos_ignorados' not in st.session_state:
+                                    st.session_state['equipos_ignorados'] = set()
+                                st.session_state['equipos_ignorados'].update(equipos_afectados) 
+                                mascara = st.session_state['df_master']['Equipo'].isin(equipos_afectados)
+                                st.session_state['df_master'].loc[mascara, 'Alerta_Auditoria'] = 'VERDE'
+                                st.rerun()
+                                
+                        with col2:
+                            with st.expander("🔄 Reasignar a Cliente Existente"):
+                                dst_existente = st.selectbox("Selecciona destino:", clientes_unicos, label_visibility="collapsed", key="sel_dst")
+                                if st.button("Confirmar Reasignación", use_container_width=True):
+                                    if dst_existente and dst_existente.strip() != "":
+                                        ejecutar_reasignacion(dst_existente.strip().upper())
+                                    else:
+                                        st.error("⚠️ Selecciona un destino.")
+                                        
+                        with col3:
+                            with st.expander("📄 Crear Nuevo Contrato"):
+                                dst_nuevo = st.text_input("Nombre del contrato:", label_visibility="collapsed", placeholder="Ej: TRACTOCAR CARTAGENA", key="txt_dst")
+                                if st.button("Confirmar Creación", use_container_width=True):
+                                    if dst_nuevo and dst_nuevo.strip() != "":
+                                        ejecutar_reasignacion(dst_nuevo.strip().upper())
+                                    else:
+                                        st.error("⚠️ Escribe un nombre válido.")
+                    else:
+                        st.info("👈 Selecciona al menos un equipo en la tabla superior para activar las opciones.")
                             
                 st.write("---")
                 
-                # --- TEXTO PERSONALIZADO Y LISTA DE COMBUSTIÓN ---
+                # --- NUEVA ALERTA LOCAL: VISITAS DUPLICADAS (POR CLIENTE) ---
+                df_visitas_multiples = df_filtrado.groupby(['Equipo', 'Fecha_Visita']).size().reset_index(name='Cantidad_Visitas')
+                df_visitas_multiples = df_visitas_multiples[df_visitas_multiples['Cantidad_Visitas'] > 1]
+                
+                if not df_visitas_multiples.empty:
+                    st.info("📌 **ATENCIÓN:** Los siguientes equipos tienen múltiples visitas el mismo día. (En el PDF se purgarán y mostrará 1 sola fecha).")
+                    st.dataframe(df_visitas_multiples, hide_index=True)
+                
                 st.subheader("📝 Novedades y Observaciones del Mes")
                 texto_novedad = st.text_area(
                     "Agrega una nota personalizada para este cliente (opcional):", 
                     placeholder="Ej: Durante este mes se observó un desgaste irregular en las llantas del equipo 408..."
                 )
                 
-                # Leemos la lista de combustión para saber de qué tipo es cada equipo
                 lista_combustion = []
                 archivo_tracker = "datos_samm/Control_Mantenimiento.xlsx"
                 if os.path.exists(archivo_tracker):
@@ -375,28 +426,19 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                         col = 'EQUIPO' if 'EQUIPO' in df_tr.columns else 'Equipo'
                         lista_combustion = df_tr[col].astype(str).str.strip().tolist()
                     except: pass
-                # ---------------------------------------------------------
 
-                # Ahora le pasamos la novedad y la lista de equipos a la función del PDF
                 pdf_bytes = generar_pdf_cliente(df_filtrado, cliente_seleccionado, texto_novedad, lista_combustion)
                 
                 st.download_button(f"⬇️ Descargar PDF - {cliente_seleccionado}", pdf_bytes, f"Cronograma_{cliente_seleccionado}.pdf", "application/pdf", type="primary")
 
-                # ==========================================================
-                # PLANIFICADOR LOGÍSTICO INTERNO (RUTA DINO)
-                # ==========================================================
                 st.markdown("---")
                 st.subheader("🚜 Planificador Logístico Interno (Mantenimiento Dino)")
                 st.info("Calcula las horas técnicas del mes, evaluando restricciones FÍSICAS (Sucursal).")
                 
-                # 1. Filtro Inverso (Blacklist): Zonas o plantas fuera de ruta
                 palabras_excluidas = ['cartagena', 'ajover', 'bogota', 'altipal', 'cerete', 'serete', 'soberana']
                 patron_exclusion = '|'.join(palabras_excluidas)
                 
-                # 2. Buscamos si la palabra prohibida está ÚNICAMENTE en la 'Sucursal'
                 mascara_sucursal = df_limpio['Sucursal'].astype(str).str.contains(patron_exclusion, case=False, na=False)
-                
-                # 3. Nos quedamos con la flota filtrada: Todo lo que NO (~) tenga esas palabras en sucursal
                 df_ruta_dino = df_limpio[~mascara_sucursal].copy()
                 
                 if not df_ruta_dino.empty:
@@ -426,7 +468,6 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
     else:
         st.info("👈 Sube el reporte de SAMM para gestionar los cronogramas.")
 
-
 # =====================================================================
 # 🟦 MÓDULO 2: PREDICTIVO DE HORÓMETROS (Aceites y Filtros)
 # =====================================================================
@@ -449,7 +490,15 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
             
     df_maestro['Horometro Actual'] = df_maestro['Horometro Actual'].apply(limpiar_horometro_base)
     df_maestro = df_maestro.dropna(subset=['Horometro Actual'])
-    df_maestro['equipo_str'] = df_maestro['equipo'].astype(str).str.strip()
+    
+    def normalizar_id_universal(val):
+        val_str = str(val).strip()
+        match = re.search(r'\[\s*(\d+)\s*\]', val_str)
+        if match: return match.group(1)
+        if val_str.endswith('.0'): return val_str[:-2]
+        return val_str
+
+    df_maestro['equipo_str'] = df_maestro['equipo'].apply(normalizar_id_universal)
     
     archivo_tracker = "datos_samm/Control_Mantenimiento.xlsx"
     
@@ -471,16 +520,19 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
         if 'Horometro_Base_Ciclo' not in df_tracker.columns:
             df_tracker['Horometro_Base_Ciclo'] = df_tracker['Ultimo_Mantenimiento']
             
-        df_tracker['Equipo'] = df_tracker['Equipo'].astype(str).str.strip()
+        df_tracker['Equipo'] = df_tracker['Equipo'].apply(normalizar_id_universal)
         df_tracker = df_tracker[~df_tracker['Equipo'].str.upper().isin(['NAN', 'NONE', 'NA', ''])]
         df_maestro = df_maestro[~df_maestro['equipo_str'].str.upper().isin(['NAN', 'NONE', 'NA', ''])]
     else:
         st.warning("⚠️ No se encontró el archivo 'Control_Mantenimiento.xlsx' en 'datos_samm'.")
         st.stop()
         
+    # PRIORIDAD ESTRICTA A LA SUCURSAL
+    col_ubi_pred = 'Sucursal' if 'Sucursal' in df_maestro.columns else 'sucursal' if 'sucursal' in df_maestro.columns else 'Ubicacion'
+    
     df_predictivo = pd.merge(
         df_tracker, 
-        df_maestro[['equipo_str', 'Tercero', 'Sucursal', 'Modelo', 'Horometro Actual']], 
+        df_maestro[['equipo_str', 'Tercero', col_ubi_pred, 'Modelo', 'Horometro Actual']], 
         left_on='Equipo', 
         right_on='equipo_str', 
         how='inner'
@@ -509,15 +561,10 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
     
     def calcular_nivel(row):
         faltan = row['Horas_Faltantes']
-        
-        if faltan < -50:
-            return "NIVEL MÁXIMO (Requiere Cambio TOTAL por Atraso)"
-            
+        if faltan < -50: return "NIVEL MÁXIMO (Requiere Cambio TOTAL por Atraso)"
         horas_acumuladas = row['Proximo_Mantenimiento'] - row['Horometro_Base_Ciclo']
         if horas_acumuladas <= 0: return "NIVEL 1 (Filtros Básicos Motor)"
-        
         ciclo_exacto = round(horas_acumuladas / 250) * 250
-        
         if ciclo_exacto % 2000 == 0: return "NIVEL 4 (Básico + Diferencial + Hidráulico)"
         if ciclo_exacto % 1000 == 0: return "NIVEL 3 (Básico + Caja Int + Correa)"
         if ciclo_exacto % 500 == 0: return "NIVEL 2 (Básico + Caja Ext + Frenos)"
@@ -533,7 +580,6 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
     df_predictivo['Alerta'] = df_predictivo['Horas_Faltantes'].apply(semaforo)
     
     st.subheader("🚨 Panel de Alertas y Trámites")
-    
     df_alertas = df_predictivo[df_predictivo['Alerta'].str.contains('🔴|🟡')].sort_values(by='Horas_Faltantes')
     
     if not df_alertas.empty:
@@ -543,7 +589,6 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
         buffer_alertas = io.BytesIO()
         with pd.ExcelWriter(buffer_alertas, engine='xlsxwriter') as writer:
             df_alertas[columnas_ver].to_excel(writer, sheet_name='Solicitud_Filtros', index=False)
-        
         st.download_button(
             label="📥 Descargar Reporte para Compras (Excel)",
             data=buffer_alertas.getvalue(),
@@ -553,52 +598,30 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
         
         st.markdown("---")
         st.subheader("⚙️ Gestión de Estado del Mantenimiento")
-        
         c1, c2, c3 = st.columns([2, 2, 1])
-        
-        with c1:
-            equipo_revisado = st.selectbox("1. Selecciona el equipo:", df_alertas['Equipo'].tolist())
-            
-        with c2:
-            nuevo_estado = st.selectbox(
-                "2. Actualizar estado a:", 
-                [
-                    "Solicitado", 
-                    "Pendiente por instalar", 
-                    "✅ Cambio BÁSICO Realizado", 
-                    "🚨 Cambio TOTAL Realizado (Reseteo)"
-                ]
-            )
-            
+        with c1: equipo_revisado = st.selectbox("1. Selecciona el equipo:", df_alertas['Equipo'].tolist())
+        with c2: nuevo_estado = st.selectbox("2. Actualizar estado a:", ["Solicitado", "Pendiente por instalar", "✅ Cambio BÁSICO Realizado", "🚨 Cambio TOTAL Realizado (Reseteo)"])
         with c3:
             st.write("")
             st.write("")
             if st.button("Guardar Estado", type="primary", use_container_width=True):
                 if "Realizado" in nuevo_estado:
                     nuevo_horometro = df_predictivo.loc[df_predictivo['Equipo'] == equipo_revisado, 'Horometro Actual'].values[0]
-                    
                     df_tracker.loc[df_tracker['Equipo'] == equipo_revisado, 'Ultimo_Mantenimiento'] = nuevo_horometro
                     df_tracker.loc[df_tracker['Equipo'] == equipo_revisado, 'Estado_Insumos'] = "Al día"
-                    
                     if "TOTAL" in nuevo_estado:
                         df_tracker.loc[df_tracker['Equipo'] == equipo_revisado, 'Horometro_Base_Ciclo'] = nuevo_horometro
-                        st.success(f"¡Reseteo exitoso! El equipo {equipo_revisado} inicia un nuevo ciclo limpio desde {nuevo_horometro} hrs.")
+                        st.success(f"¡Reseteo exitoso! El equipo {equipo_revisado} inicia un nuevo ciclo.")
                     else:
-                        st.success(f"Mantenimiento básico registrado. El equipo {equipo_revisado} avanza en su ciclo normal.")
-                    
+                        st.success(f"Mantenimiento básico registrado.")
                     from datetime import datetime
                     if 'Fecha de cambio aceite' in df_tracker.columns:
                         df_tracker.loc[df_tracker['Equipo'] == equipo_revisado, 'Fecha de cambio aceite'] = datetime.now().strftime("%Y-%m-%d")
-                        
                 else:
                     df_tracker.loc[df_tracker['Equipo'] == equipo_revisado, 'Estado_Insumos'] = nuevo_estado
-                    st.success(f"Estado del equipo {equipo_revisado} actualizado a: {nuevo_estado}")
+                    st.success(f"Estado actualizado a: {nuevo_estado}")
                 
-                df_salida = df_tracker.rename(columns={
-                    'Equipo': 'EQUIPO',
-                    'Ultimo_Mantenimiento': 'Horometro de cambio deaceite',
-                    'Estado_Insumos': 'ESTADO INSUMOS'
-                })
+                df_salida = df_tracker.rename(columns={'Equipo': 'EQUIPO', 'Ultimo_Mantenimiento': 'Horometro de cambio deaceite', 'Estado_Insumos': 'ESTADO INSUMOS'})
                 df_salida.to_excel(archivo_tracker, index=False)
                 st.rerun()
     else:
@@ -620,14 +643,13 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
     if busqueda:
         df_dir = df_dir[df_dir.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)]
         
-    columnas_dir = ['equipo', 'Tercero', 'Sucursal', 'Modelo', 'Horometro Actual']
-    
-    if 'Link_Ficha' in df_dir.columns:
-        columnas_dir.append('Link_Ficha')
+    # PRIORIDAD ESTRICTA A LA SUCURSAL
+    col_ubi_dir = 'Sucursal' if 'Sucursal' in df_dir.columns else 'sucursal' if 'sucursal' in df_dir.columns else 'Ubicacion'
+    columnas_dir = ['equipo', 'Tercero', col_ubi_dir, 'Modelo', 'Horometro Actual']
+    if 'Link_Ficha' in df_dir.columns: columnas_dir.append('Link_Ficha')
         
     st.dataframe(df_dir[columnas_dir], use_container_width=True, hide_index=True)
     
-    # --- BOTÓN DE DESCARGA DEL DIRECTORIO ---
     buffer_dir = io.BytesIO()
     with pd.ExcelWriter(buffer_dir, engine='xlsxwriter') as writer:
         df_dir[columnas_dir].to_excel(writer, sheet_name='Directorio', index=False)
