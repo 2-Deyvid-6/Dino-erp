@@ -1,6 +1,6 @@
 streamlit
 pandas
 fpdf
+python-docx
 openpyxl
 xlsxwriter
-python-docx
