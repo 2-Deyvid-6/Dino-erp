@@ -16,17 +16,21 @@ def sanear_texto(txt):
     txt = txt.replace('“', '"').replace('”', '"')
     txt = txt.replace('‘', "'").replace('’', "'")
     # Fuerza codificación compatible con la fuente Helvetica (Latin-1)
-    return txt.encode('latin-1', 'ignore').decode('latin-1')import pandas as pd
-import re
-from fpdf import FPDF
-import os
-from datetime import datetime
-from collections import defaultdict
+    return txt.encode('latin-1', 'ignore').decode('latin-1')
 
 # =====================================================================
 # MÓDULO 1: CONFIGURACIÓN BASE Y ESTILOS (El "Lienzo")
 # =====================================================================
 class ReportePDF(FPDF):
+    # Interceptamos las funciones de dibujo para inyectar el escudo
+    def cell(self, w, h=0, txt='', *args, **kwargs):
+        txt_saneado = sanear_texto(txt)
+        super().cell(w, h, txt_saneado, *args, **kwargs)
+
+    def multi_cell(self, w, h, txt, *args, **kwargs):
+        txt_saneado = sanear_texto(txt)
+        super().multi_cell(w, h, txt_saneado, *args, **kwargs)
+
     def header(self):
         azul_dino = (0, 32, 96)
         
@@ -46,17 +50,17 @@ class ReportePDF(FPDF):
         self.multi_cell(0, 5, texto_intro, align='C')
         self.ln(8)
 
+
 # =====================================================================
 # MÓDULO 2: UTILIDADES DE DATOS (El "Cerebro Limpiador")
 # =====================================================================
 def limpiar_equipo(texto_samm):
     texto = str(texto_samm).strip()
-    match = re.search(r'\[\s*(.*?)\s*\]', texto)
+    # Busca ESTRICTAMENTE números dentro de corchetes [ ]
+    match = re.search(r'\[\s*(\d+)\s*\]', texto)
     if match:
         return match.group(1).strip()
-    numeros = re.findall(r'\d+', texto)
-    if numeros:
-        return numeros[-1]
+    # Si no tiene corchetes (ej. en la Base Maestra ya viene limpio), lo devuelve tal cual
     return texto
 
 def nombre_mes(num_mes):
@@ -67,7 +71,7 @@ def nombre_mes(num_mes):
 # =====================================================================
 # MÓDULO 3: DIBUJADO DEL CALENDARIO (Vista Rápida)
 # =====================================================================
-def dibujar_calendario_dinamico(pdf, calendario, mes_str):
+def dibujar_calendario_dinamico(pdf, calendario, mes_str, num_dias):
     azul_dino = (0, 32, 96)
     naranja_dino = (255, 102, 0)
     
@@ -85,7 +89,7 @@ def dibujar_calendario_dinamico(pdf, calendario, mes_str):
     start_x = 10
     cell_w = 11.5 
     
-    # Fila 1 (Días 1 al 16)
+    # Fila 1 (Días 1 al 16) - SIEMPRE FIJO
     y_days = pdf.get_y()
     y_eqs = y_days + 5
     max_y_row1 = y_eqs + 5
@@ -93,7 +97,7 @@ def dibujar_calendario_dinamico(pdf, calendario, mes_str):
     for d in range(1, 17):
         pdf.set_xy(start_x + (d-1)*cell_w, y_days)
         pdf.set_font("helvetica", "B", 8)
-        if calendario[d]:
+        if calendario.get(d, []):
             pdf.set_text_color(*azul_dino)
         else:
             pdf.set_text_color(180, 180, 180)
@@ -102,20 +106,20 @@ def dibujar_calendario_dinamico(pdf, calendario, mes_str):
         pdf.set_xy(start_x + (d-1)*cell_w, y_eqs)
         pdf.set_font("helvetica", "B", 6)
         pdf.set_text_color(*naranja_dino)
-        eq_text = ",".join(calendario[d])
+        eq_text = ",".join(calendario.get(d, []))
         pdf.multi_cell(cell_w, 3.5, eq_text, align='C')
         if pdf.get_y() > max_y_row1: max_y_row1 = pdf.get_y()
     
-    # Fila 2 (Días 17 al 31)
+    # Fila 2 (Días 17 hasta el FIN EXACTO DEL MES)
     pdf.set_y(max_y_row1 + 5)
     y_days = pdf.get_y()
     y_eqs = y_days + 5
     max_y_row2 = y_eqs + 5
 
-    for d in range(17, 32):
+    for d in range(17, num_dias + 1):
         pdf.set_xy(start_x + (d-17)*cell_w, y_days)
         pdf.set_font("helvetica", "B", 8)
-        if calendario[d]:
+        if calendario.get(d, []):
             pdf.set_text_color(*azul_dino)
         else:
             pdf.set_text_color(180, 180, 180)
@@ -124,7 +128,7 @@ def dibujar_calendario_dinamico(pdf, calendario, mes_str):
         pdf.set_xy(start_x + (d-17)*cell_w, y_eqs)
         pdf.set_font("helvetica", "B", 6)
         pdf.set_text_color(*naranja_dino)
-        eq_text = ",".join(calendario[d])
+        eq_text = ",".join(calendario.get(d, []))
         pdf.multi_cell(cell_w, 3.5, eq_text, align='C')
         if pdf.get_y() > max_y_row2: max_y_row2 = pdf.get_y()
             
@@ -259,7 +263,6 @@ def dibujar_tarjeta_cliente(pdf, nombre_cliente, num_equipos, ciudad, nit):
     pdf.set_font("helvetica", "B", 9)
     pdf.set_text_color(*naranja_dino)
     
-    # AJUSTE: Se eliminó la variable "ciudad" para evitar conflictos multi-sede
     texto_inferior = f"TOTAL EQUIPOS: {num_equipos}   |   NIT: {nit}"
     pdf.cell(190, 5, texto_inferior, align='C')
     
@@ -273,18 +276,15 @@ def dibujar_footer_informativo(pdf):
     naranja_dino = (255, 102, 0)
     gris_texto = (89, 89, 89)
 
-    # 1. AUMENTAMOS EL MARGEN DE SEGURIDAD GLOBAL (De 230 a 215)
     if pdf.get_y() > 215:
         pdf.add_page()
         
     pdf.ln(8)
 
-    # Título Flotante
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*azul_dino)
     pdf.cell(0, 6, "Personal Técnico Asignado:", ln=True)
     
-    # 2. Caja Adaptativa de Técnicos
     y_start = pdf.get_y()
     tecnicos = "ARIEL ORTEGA  |  GERMAN LECHUGA  |  ISAAC MARIOTA  |  EDGAR SOLANO  | JESUS AVENDAÑO  | SANTIAGO PINTO |  MARTIN SUAREZ | YOINER HURTADO"
     
@@ -293,7 +293,6 @@ def dibujar_footer_informativo(pdf):
     pdf.set_text_color(*gris_texto)
     pdf.multi_cell(186, 5, tecnicos, align='C')
     
-    # Cálculo exacto de la altura del recuadro
     y_end = pdf.get_y()
     box_height = (y_end - y_start) + 3.5
     
@@ -303,17 +302,14 @@ def dibujar_footer_informativo(pdf):
     
     pdf.set_y(y_end + 8)
 
-    # 3. SEGUNDA VALIDACIÓN DE SEGURIDAD (Por si el bloque anterior creció mucho)
     if pdf.get_y() > 260:
         pdf.add_page()
 
-    # 4. Caja de Horario
     y_start = pdf.get_y()
     pdf.set_draw_color(*azul_dino)
     pdf.set_line_width(0.4)
     pdf.rect(x=10, y=y_start, w=190, h=18, style='D', round_corners=True, corner_radius=3)
     
-    # Apagamos temporalmente el salto automático para forzar el dibujo dentro de la caja
     auto_pb = pdf.auto_page_break
     pb_margin = pdf.b_margin
     pdf.set_auto_page_break(False)
@@ -327,12 +323,11 @@ def dibujar_footer_informativo(pdf):
     pdf.set_font("helvetica", "B", 11)
     pdf.cell(190, 5, "SÁBADO DE 8:10 A 11:50", align='C')
     
-    # Reactivamos la configuración normal del PDF
     pdf.set_auto_page_break(auto_pb, pb_margin)
     pdf.set_y(y_start + 18)
 
 # =====================================================================
-# MÓDULO 5: DIRECTOR DE ORQUESTA (NUEVA LÓGICA MULTI-MES)
+# MÓDULO 5: DIRECTOR DE ORQUESTA (CANDADO DE MES ÚNICO)
 # =====================================================================
 def generar_pdf_cliente(df_cliente, nombre_cliente, texto_novedad="", lista_combustion=None):
     if lista_combustion is None: lista_combustion = []
@@ -352,26 +347,43 @@ def generar_pdf_cliente(df_cliente, nombre_cliente, texto_novedad="", lista_comb
             
     df_cliente_clean['Mes_Clave'] = df_cliente_clean['Fecha_Visita'].apply(extraer_mes_año)
     
+    # --- CANDADO ESTRICTO DE MES ÚNICO ---
+    if not df_cliente_clean.empty:
+        meses_validos = df_cliente_clean[df_cliente_clean['Mes_Clave'] != (9999, 99)]
+        if not meses_validos.empty:
+            mes_principal = meses_validos['Mes_Clave'].mode()[0]
+            df_cliente_clean = df_cliente_clean[df_cliente_clean['Mes_Clave'] == mes_principal]
+            
+    # --- PURGA DE VISITAS DUPLICADAS ---
+    # Si un equipo tiene múltiples visitas el MISMO día, se fusionan en una sola para el PDF
+    df_cliente_clean = df_cliente_clean.drop_duplicates(subset=['EquipoLimpio', 'Fecha_Visita'])
+
     num_equipos = df_cliente_clean['EquipoLimpio'].nunique() 
     nit_cliente = str(df_cliente_clean['NIT'].iloc[0]) if 'NIT' in df_cliente_clean.columns else "S/D"
     ciudad_cliente = str(df_cliente_clean['Ciudad_Global'].iloc[0]) if 'Ciudad_Global' in df_cliente_clean.columns else "S/D"
 
     meses_presentes = sorted(df_cliente_clean['Mes_Clave'].unique())
 
+    # De aquí en adelante el código sigue intacto
     for i, mes_clave in enumerate(meses_presentes):
         anio, mes_num = mes_clave
         if anio == 9999: continue 
         
+        num_dias = calendar.monthrange(anio, mes_num)[1]
+        
         mes_str = f"{nombre_mes(mes_num)} {anio}"
         df_mes_actual = df_cliente_clean[df_cliente_clean['Mes_Clave'] == mes_clave]
         
-        calendario_mes = {d: [] for d in range(1, 32)}
+        # 3. Armar el calendario de la vista rápida
+        calendario_mes = {d: [] for d in range(1, num_dias + 1)}
         for _, row in df_mes_actual.iterrows():
             try:
                 f_str = str(row['Fecha_Visita']).split(" ")[0]
                 dia = datetime.strptime(f_str, "%d/%m/%Y").day
                 eq = row['EquipoLimpio']
-                if eq not in calendario_mes[dia]: calendario_mes[dia].append(eq)
+                
+                if dia <= num_dias:
+                    if eq not in calendario_mes[dia]: calendario_mes[dia].append(eq)
             except:
                 pass
                 
@@ -379,8 +391,11 @@ def generar_pdf_cliente(df_cliente, nombre_cliente, texto_novedad="", lista_comb
         if i == 0:
             dibujar_tarjeta_cliente(pdf, nombre_cliente, num_equipos, ciudad_cliente, nit_cliente)
             
-        dibujar_calendario_dinamico(pdf, calendario_mes, mes_str)
+        dibujar_calendario_dinamico(pdf, calendario_mes, mes_str, num_dias)
+        
+        # Dibuja las tarjetas manteniendo el nombre original de la sucursal intacto
         dibujar_tarjetas_equipos(pdf, df_mes_actual, mes_str)
+
 
     # =========================================================
     # NUEVAS TARJETAS (DISEÑO UNIFICADO Y ELÁSTICO)
