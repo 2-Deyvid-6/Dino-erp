@@ -411,6 +411,55 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                 if not df_visitas_multiples.empty:
                     st.info("📌 **ATENCIÓN:** Los siguientes equipos tienen múltiples visitas el mismo día. (En el PDF se purgarán y mostrará 1 sola fecha).")
                     st.dataframe(df_visitas_multiples, hide_index=True)
+                    
+                # =========================================================
+                # NUEVO: VISTA PREVIA Y SEPARADOR DE CRONOGRAMAS
+                # =========================================================
+                st.write("---")
+                st.subheader(f"📋 Vista Previa del Cronograma: {cliente_seleccionado}")
+                st.info("Revisa los equipos que saldrán en este PDF. Si necesitas separar este cronograma en dos contratos distintos, marca las casillas y muévelos.")
+                
+                df_vista_previa = df_filtrado[['Equipo', 'Sucursal', 'Fecha_Visita', 'Mantenimiento']].copy()
+                df_vista_previa.insert(0, '✅ Separar', False)
+                
+                df_editado_prev = st.data_editor(df_vista_previa, hide_index=True, use_container_width=True, disabled=['Equipo', 'Sucursal', 'Fecha_Visita', 'Mantenimiento'])
+                equipos_a_separar = df_editado_prev[df_editado_prev['✅ Separar'] == True]['Equipo'].tolist()
+                
+                if equipos_a_separar:
+                    st.markdown("### ✂️ Separar Equipos Seleccionados")
+                    
+                    def ejecutar_separacion(nuevo_cliente_destino):
+                        mascara_sep = st.session_state['df_master']['Equipo'].isin(equipos_a_separar)
+                        st.session_state['df_master'].loc[mascara_sep, 'Cliente'] = nuevo_cliente_destino
+                        
+                        def re_auditar_sep(row):
+                            eq_s = str(row['Equipo']).strip()
+                            if eq_s in st.session_state.get('equipos_ignorados', set()): return "VERDE"
+                            cliente_samm = str(row['Cliente']).upper().strip()
+                            tercero_maestro_raw = dict_tercero.get(eq_s)
+                            if pd.isna(tercero_maestro_raw) or str(tercero_maestro_raw).strip() == "" or str(tercero_maestro_raw).strip().upper() in ["NAN", "SIN_ASIGNAR"]: return "VERDE"
+                            tercero_maestro = str(tercero_maestro_raw).upper().strip()
+                            if cliente_samm not in tercero_maestro and tercero_maestro not in cliente_samm: return "ROJO"
+                            return "VERDE"
+                            
+                        st.session_state['df_master']['Alerta_Auditoria'] = st.session_state['df_master'].apply(re_auditar_sep, axis=1)
+                        st.rerun()
+
+                    c1_sep, c2_sep = st.columns(2)
+                    with c1_sep:
+                        with st.expander("🔄 Mover a Cliente Existente"):
+                            dst_ex = st.selectbox("Destino:", clientes_unicos, label_visibility="collapsed", key="sel_dst_ex")
+                            if st.button("Confirmar Traslado", use_container_width=True, key="btn_ex"):
+                                if dst_ex and dst_ex.strip() != "": ejecutar_separacion(dst_ex.strip().upper())
+                                else: st.error("⚠️ Selecciona un destino.")
+                    with c2_sep:
+                        with st.expander("📄 Mover a Nuevo Contrato"):
+                            dst_nu = st.text_input("Nombre del contrato:", label_visibility="collapsed", placeholder="Ej: CLIENTE - SEDE NORTE", key="sel_dst_nu")
+                            if st.button("Confirmar Creación", use_container_width=True, key="btn_nu"):
+                                if dst_nu and dst_nu.strip() != "": ejecutar_separacion(dst_nu.strip().upper())
+                                else: st.error("⚠️ Escribe un nombre válido.")
+                                
+                st.write("---")
                 
                 st.subheader("📝 Novedades y Observaciones del Mes")
                 texto_novedad = st.text_area(
