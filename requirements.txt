@@ -4,4 +4,3 @@ fpdf
 python-docx
 openpyxl
 xlsxwriter
-xlrd 2.0.1
