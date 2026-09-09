@@ -40,7 +40,7 @@ if 'df_base_maestra' not in st.session_state:
         st.stop()
         
     archivos = glob.glob("datos_samm/*.xls*")
-    archivos_maestros = [f for f in archivos if "Control_Mantenimiento" not in f]
+    archivos_maestros = [f for f in archivos if "Control_Mantenimiento" not in f and "Base_Fichas" not in f]
     
     if not archivos_maestros:
         st.error("⚠️ La carpeta 'datos_samm' está vacía. Coloca tu archivo de equipos ahí.")
@@ -49,10 +49,50 @@ if 'df_base_maestra' not in st.session_state:
     try:
         ruta_maestro = archivos_maestros[0]
         df_maestro = pd.read_excel(ruta_maestro) 
+        
+        # --- NUEVO: MÓDULO SATÉLITE - FICHAS TÉCNICAS (EL VIGÍA) ---
+        RUTA_FICHAS = 'datos_samm/Base_Fichas.xlsx'
+        
+        # 1. Si no existe, lo crea usando el df_maestro
+        if not os.path.exists(RUTA_FICHAS):
+            df_fichas = pd.DataFrame({
+                'Equipo': df_maestro['equipo'].unique(), # Tu maestro usa 'equipo' en minúscula
+                'Link_Ficha': [""] * len(df_maestro['equipo'].unique())
+            })
+            df_fichas.to_excel(RUTA_FICHAS, index=False)
+        else:
+            df_fichas = pd.read_excel(RUTA_FICHAS)
+            
+        # 2. Revisa equipos nuevos
+        equipos_maestra = set(df_maestro['equipo'].dropna().astype(str).unique())
+        equipos_fichas = set(df_fichas['Equipo'].dropna().astype(str).unique())
+        equipos_nuevos = equipos_maestra - equipos_fichas
+        
+        if equipos_nuevos:
+            df_nuevos = pd.DataFrame({
+                'Equipo': list(equipos_nuevos),
+                'Link_Ficha': [""] * len(equipos_nuevos)
+            })
+            df_fichas = pd.concat([df_fichas, df_nuevos], ignore_index=True)
+            df_fichas.to_excel(RUTA_FICHAS, index=False)
+            
+        # 3. Fusión en memoria (La Súper Base Maestra)
+        if 'Link_Ficha' in df_maestro.columns:
+            df_maestro = df_maestro.drop(columns=['Link_Ficha'])
+            
+        df_maestro['Equipo_str'] = df_maestro['equipo'].astype(str)
+        df_fichas['Equipo_str'] = df_fichas['Equipo'].astype(str)
+        
+        df_maestro = pd.merge(df_maestro, df_fichas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
+        df_maestro = df_maestro.drop(columns=['Equipo_str'])
+        
+        # Guardamos la súper base maestra (ya con los links incluidos) en la memoria temporal
         st.session_state['df_base_maestra'] = df_maestro
+        
     except Exception as e:
-        st.error(f"⚠️ Error crítico al leer la Base Maestra. Detalle: {e}")
+        st.error(f"⚠️ Error crítico al leer la Base Maestra o Fichas. Detalle: {e}")
         st.stop()
+
 
 # =====================================================================
 # 🟩 MÓDULO 1: GESTIÓN DE CRONOGRAMAS 
@@ -686,11 +726,50 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
     st.title("🚜 Directorio Global de Flota")
     st.markdown("---")
     
+    # =========================================================
+    # NUEVO: GESTOR INTERACTIVO DE ENLACES
+    # =========================================================
+    with st.expander("🔗 Panel Administrador: Enlazar Fichas de Google Drive", expanded=False):
+        st.info("Pega aquí los enlaces de Google Drive (Modo Lector). Se guardarán automáticamente de forma independiente a SAMM.")
+        
+        # Cargamos directo del archivo satélite para guardar rápido
+        df_editor_fichas = pd.read_excel('datos_samm/Base_Fichas.xlsx')
+        
+        df_editado_fichas = st.data_editor(
+            df_editor_fichas,
+            column_config={
+                "Equipo": st.column_config.TextColumn("Equipo (Bloqueado)", disabled=True),
+                "Link_Ficha": st.column_config.LinkColumn("🔗 Enlace de Google Drive")
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="editor_fichas_drive"
+        )
+        
+        # Guardado automático al detectar un cambio
+        if not df_editor_fichas.equals(df_editado_fichas):
+            df_editado_fichas.to_excel('datos_samm/Base_Fichas.xlsx', index=False)
+            st.success("✅ ¡Link guardado en la base de datos de Fichas!")
+            st.rerun() # Recarga la app para aplicar el cambio instantáneamente
+            
+    st.write("---")
+
+    # =========================================================
+    # BUSCADOR Y VISOR DE FLOTA
+    # =========================================================
     df_dir = st.session_state['df_base_maestra'].copy()
     busqueda = st.text_input("🔍 Buscar por Número de Equipo, Cliente, Modelo o Sucursal:")
     
     if busqueda:
         df_dir = df_dir[df_dir.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)]
+        
+        # --- CIRUGÍA 3: EL BOTÓN DE GOOGLE DRIVE ---
+        if not df_dir.empty:
+            link_actual = df_dir['Link_Ficha'].iloc[0]
+            if pd.notna(link_actual) and str(link_actual).strip() != "":
+                st.link_button("📄 ABRIR FICHA TÉCNICA (Google Drive)", str(link_actual).strip(), type="primary")
+            else:
+                st.warning("⚠️ Este equipo aún no tiene una ficha técnica enlazada en el Panel Administrador.")
         
     # PRIORIDAD ESTRICTA A LA SUCURSAL
     col_ubi_dir = 'Sucursal' if 'Sucursal' in df_dir.columns else 'sucursal' if 'sucursal' in df_dir.columns else 'Ubicacion'
@@ -709,4 +788,44 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
         file_name="Directorio_Dinomontacargas.xlsx",
         mime="application/vnd.ms-excel"
     )
-    
+
+# =========================================================
+# NUEVO: MÓDULO SATÉLITE - FICHAS TÉCNICAS (EL VIGÍA)
+# =========================================================
+RUTA_FICHAS = 'datos_samm/Base_Fichas.xlsx'
+
+# 1. Si el archivo no existe, lo creamos en blanco para que no falle
+if not os.path.exists(RUTA_FICHAS):
+    df_fichas = pd.DataFrame({
+        'Equipo': df_master['Equipo'].unique(),
+        'Link_Ficha': [""] * len(df_master['Equipo'].unique())
+    })
+    df_fichas.to_excel(RUTA_FICHAS, index=False)
+else:
+    df_fichas = pd.read_excel(RUTA_FICHAS)
+
+# 2. El Vigía: Revisar si llegaron equipos nuevos de SAMM que no estén en Fichas
+equipos_maestra = set(df_master['Equipo'].dropna().astype(str).unique())
+equipos_fichas = set(df_fichas['Equipo'].dropna().astype(str).unique())
+equipos_nuevos = equipos_maestra - equipos_fichas
+
+if equipos_nuevos:
+    # Agregar los equipos nuevos a la base de fichas en blanco
+    df_nuevos = pd.DataFrame({
+        'Equipo': list(equipos_nuevos),
+        'Link_Ficha': [""] * len(equipos_nuevos)
+    })
+    df_fichas = pd.concat([df_fichas, df_nuevos], ignore_index=True)
+    df_fichas.to_excel(RUTA_FICHAS, index=False)
+
+# 3. Fusión: Pegar el Link de la ficha a la memoria de la aplicación
+# Limpiamos primero por si acaso la columna ya venía en el Excel original
+if 'Link_Ficha' in df_master.columns:
+    df_master = df_master.drop(columns=['Link_Ficha'])
+
+df_master['Equipo_str'] = df_master['Equipo'].astype(str)
+df_fichas['Equipo_str'] = df_fichas['Equipo'].astype(str)
+
+df_master = pd.merge(df_master, df_fichas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
+df_master = df_master.drop(columns=['Equipo_str'])
+# =========================================================
