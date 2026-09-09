@@ -58,35 +58,44 @@ if 'df_base_maestra' not in st.session_state:
         ruta_maestro = archivos_maestros[0]
         df_maestro = pd.read_excel(ruta_maestro) 
         
-        # 1. Preparamos los IDs del maestro primero para usarlos como diccionario de búsqueda
+        # 1. Preparamos los IDs y los ORDENAMOS por longitud (el más largo primero)
         if 'Link_Ficha' in df_maestro.columns:
             df_maestro = df_maestro.drop(columns=['Link_Ficha'])
+        
         df_maestro['Equipo_str'] = df_maestro['equipo'].apply(normalizar_id_universal)
-        equipos_conocidos = df_maestro['Equipo_str'].dropna().unique()
+        
+        # MAGIA: Ordenar de mayor a menor longitud. Así "191" se evalúa antes que "1" o "T1"
+        equipos_conocidos = sorted(df_maestro['Equipo_str'].dropna().unique(), key=lambda x: len(str(x)), reverse=True)
         
         # 2. FUSIÓN SÚPER INTELIGENTE CON EL BOT DE DRIVE
         RUTA_FICHAS = 'datos_samm/Fichas_Drive.xlsx'
         if os.path.exists(RUTA_FICHAS):
             df_fichas = pd.read_excel(RUTA_FICHAS)
             
-            # Nuevo Francotirador: Busca si el ID exacto del maestro está oculto en el nombre del archivo de Drive
             def extraer_numero_ficha(nombre):
-                nombre_limpio = str(nombre).upper().replace(" ", "").replace("-", "")
+                nombre_str = str(nombre).upper()
                 
-                # Escanea cada equipo conocido y revisa si su ID está dentro del nombre del archivo
+                # Búsqueda Prioritaria: Buscar el ID exacto (ej: "PWK 765" o "191") en el nombre original
                 for eq in equipos_conocidos:
-                    eq_limpio = str(eq).upper().replace(" ", "").replace("-", "")
-                    if eq_limpio != "" and eq_limpio in nombre_limpio:
-                        return eq # ¡Match exacto! Ignorando espacios y palabras extra
+                    eq_str = str(eq).upper().strip()
+                    if eq_str != "" and eq_str in nombre_str:
+                        return eq 
                 
-                # Plan de respaldo
+                # Búsqueda Agresiva: Si hay guiones o espacios raros, limpiamos todo y volvemos a intentar
+                nombre_limpio = nombre_str.replace(" ", "").replace("-", "").replace("_", "")
+                for eq in equipos_conocidos:
+                    eq_limpio = str(eq).upper().replace(" ", "").replace("-", "").replace("_", "")
+                    if eq_limpio != "" and eq_limpio in nombre_limpio:
+                        return eq
+                
+                # Plan de respaldo (Si todo falla)
                 match = re.search(r'(\d+)\.\w+$', str(nombre).strip(), re.IGNORECASE)
                 if match: return match.group(1)
                 return str(nombre)
                 
             df_fichas['Equipo_str'] = df_fichas['Nombre_Archivo'].apply(extraer_numero_ficha)
             
-            # Cruzamos los datos
+            # Cruzamos los datos asegurando que no haya duplicados
             df_fichas_unicas = df_fichas.drop_duplicates(subset=['Equipo_str'], keep='first')
             df_maestro = pd.merge(df_maestro, df_fichas_unicas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
             
