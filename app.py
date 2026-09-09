@@ -790,7 +790,6 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
                 st.write(f"**📍 Ubicación:** {datos_equipo.get(col_ubi_dir, 'No registrada')}")
                 st.write(f"**⚙️ Modelo:** {datos_equipo.get('Modelo', 'No registrado')}")
                 
-                # Se agrega el serial (Verifica que la columna Serial o número similar exista en tu Excel Maestro)
                 # --- BUSCADOR INTELIGENTE DE LA COLUMNA SERIAL ---
                 posibles_nombres = [c for c in df_filtrado.columns if 'serial' in str(c).lower() or 'serie' in str(c).lower() or 'chasis' in str(c).lower()]
                 columna_serial_real = posibles_nombres[0] if posibles_nombres else None
