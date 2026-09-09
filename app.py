@@ -30,7 +30,7 @@ with st.sidebar:
     st.header("📥 Ingreso de Datos (Módulo 1)")
     st.info("Sube el reporte de SAMM (Detalle_Visitas).")
     archivo_samm = st.file_uploader("Cargar SAMM", type=["xls", "xlsx"], key="samm")
-
+    
 # =====================================================================
 # --- CEREBRO GLOBAL: LECTURA DE LA BASE MAESTRA ---
 # =====================================================================
@@ -48,51 +48,10 @@ if 'df_base_maestra' not in st.session_state:
         
     try:
         ruta_maestro = archivos_maestros[0]
-        df_maestro = pd.read_excel(ruta_maestro) 
-        
-        # --- NUEVO: MÓDULO SATÉLITE - FICHAS TÉCNICAS (EL VIGÍA) ---
-        RUTA_FICHAS = 'datos_samm/Base_Fichas.xlsx'
-        
-        # 1. Si no existe, lo crea usando el df_maestro
-        if not os.path.exists(RUTA_FICHAS):
-            df_fichas = pd.DataFrame({
-                'Equipo': df_maestro['equipo'].unique(), # Tu maestro usa 'equipo' en minúscula
-                'Link_Ficha': [""] * len(df_maestro['equipo'].unique())
-            })
-            df_fichas.to_excel(RUTA_FICHAS, index=False)
-        else:
-            df_fichas = pd.read_excel(RUTA_FICHAS)
-            
-        # 2. Revisa equipos nuevos
-        equipos_maestra = set(df_maestro['equipo'].dropna().astype(str).unique())
-        equipos_fichas = set(df_fichas['Equipo'].dropna().astype(str).unique())
-        equipos_nuevos = equipos_maestra - equipos_fichas
-        
-        if equipos_nuevos:
-            df_nuevos = pd.DataFrame({
-                'Equipo': list(equipos_nuevos),
-                'Link_Ficha': [""] * len(equipos_nuevos)
-            })
-            df_fichas = pd.concat([df_fichas, df_nuevos], ignore_index=True)
-            df_fichas.to_excel(RUTA_FICHAS, index=False)
-            
-        # 3. Fusión en memoria (La Súper Base Maestra)
-        if 'Link_Ficha' in df_maestro.columns:
-            df_maestro = df_maestro.drop(columns=['Link_Ficha'])
-            
-        df_maestro['Equipo_str'] = df_maestro['equipo'].astype(str)
-        df_fichas['Equipo_str'] = df_fichas['Equipo'].astype(str)
-        
-        df_maestro = pd.merge(df_maestro, df_fichas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
-        df_maestro = df_maestro.drop(columns=['Equipo_str'])
-        
-        # Guardamos la súper base maestra (ya con los links incluidos) en la memoria temporal
-        st.session_state['df_base_maestra'] = df_maestro
-        
+        st.session_state['df_base_maestra'] = pd.read_excel(ruta_maestro) 
     except Exception as e:
-        st.error(f"⚠️ Error crítico al leer la Base Maestra o Fichas. Detalle: {e}")
+        st.error(f"⚠️ Error crítico al leer la Base Maestra. Detalle: {e}")
         st.stop()
-
 
 # =====================================================================
 # 🟩 MÓDULO 1: GESTIÓN DE CRONOGRAMAS 
@@ -726,57 +685,38 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
     st.title("🚜 Directorio Global de Flota")
     st.markdown("---")
     
-    # =========================================================
-    # NUEVO: GESTOR INTERACTIVO DE ENLACES
-    # =========================================================
-    with st.expander("🔗 Panel Administrador: Enlazar Fichas de Google Drive", expanded=False):
-        st.info("Pega aquí los enlaces de Google Drive (Modo Lector). Se guardarán automáticamente de forma independiente a SAMM.")
-        
-        # Cargamos directo del archivo satélite para guardar rápido
-        df_editor_fichas = pd.read_excel('datos_samm/Base_Fichas.xlsx')
-        
-        # ---> EL ESCUDO: Forzamos a que todo sea texto para que Streamlit no colapse <---
-        df_editor_fichas['Equipo'] = df_editor_fichas['Equipo'].astype(str)
-        df_editor_fichas['Link_Ficha'] = df_editor_fichas['Link_Ficha'].fillna("").astype(str)
-        
-        df_editado_fichas = st.data_editor(
-            df_editor_fichas,
-            column_config={
-                "Equipo": st.column_config.TextColumn("Equipo (Bloqueado)", disabled=True),
-                "Link_Ficha": st.column_config.LinkColumn("🔗 Enlace de Google Drive")
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="editor_fichas_drive"
-        )
-        
-        # Guardado automático al detectar un cambio
-        if not df_editor_fichas.equals(df_editado_fichas):
-            df_editado_fichas.to_excel('datos_samm/Base_Fichas.xlsx', index=False)
-            st.success("✅ ¡Link guardado en la base de datos de Fichas!")
-            st.rerun() # Recarga la app para aplicar el cambio instantáneamente
-        
-    # =========================================================
-    # BUSCADOR Y VISOR DE FLOTA
-    # =========================================================
     df_dir = st.session_state['df_base_maestra'].copy()
+    
+    # --- EXTRACTOR INTELIGENTE DE IDs PARA GOOGLE DRIVE ---
+    def normalizar_para_drive(val):
+        val_str = str(val).strip()
+        # Si tiene corchetes (Ej: [ 191 ]), saca solo el número
+        match = re.search(r'\[\s*(\d+)\s*\]', val_str)
+        if match: return match.group(1)
+        # Si termina en .0 lo limpia
+        if val_str.endswith('.0'): return val_str[:-2]
+        return val_str
+
     busqueda = st.text_input("🔍 Buscar por Número de Equipo, Cliente, Modelo o Sucursal:")
     
     if busqueda:
         df_dir = df_dir[df_dir.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)]
         
-        # --- CIRUGÍA 3: EL BOTÓN DE GOOGLE DRIVE ---
+        # --- EL PLAN B: BOTÓN DE BÚSQUEDA DINÁMICA ---
         if not df_dir.empty:
-            link_actual = df_dir['Link_Ficha'].iloc[0]
-            if pd.notna(link_actual) and str(link_actual).strip() != "":
-                st.link_button("📄 ABRIR FICHA TÉCNICA (Google Drive)", str(link_actual).strip(), type="primary")
-            else:
-                st.warning("⚠️ Este equipo aún no tiene una ficha técnica enlazada en el Panel Administrador.")
-        
+            # Tomamos el número exacto del primer equipo que apareció en la búsqueda
+            equipo_raw = df_dir['equipo'].iloc[0]
+            equipo_limpio = normalizar_para_drive(equipo_raw)
+            
+            # Construimos el link mágico de Google Drive
+            link_drive = f"https://drive.google.com/drive/search?q={equipo_limpio}"
+            
+            st.info(f"💡 ¿Necesitas ver la ficha técnica del equipo **{equipo_raw}**?")
+            st.link_button(f"🔍 BUSCAR FICHA EN DRIVE ({equipo_limpio})", link_drive, type="primary")
+
     # PRIORIDAD ESTRICTA A LA SUCURSAL
     col_ubi_dir = 'Sucursal' if 'Sucursal' in df_dir.columns else 'sucursal' if 'sucursal' in df_dir.columns else 'Ubicacion'
     columnas_dir = ['equipo', 'Tercero', col_ubi_dir, 'Modelo', 'Horometro Actual']
-    if 'Link_Ficha' in df_dir.columns: columnas_dir.append('Link_Ficha')
         
     st.dataframe(df_dir[columnas_dir], use_container_width=True, hide_index=True)
     
