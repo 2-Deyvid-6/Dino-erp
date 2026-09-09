@@ -58,29 +58,39 @@ if 'df_base_maestra' not in st.session_state:
         ruta_maestro = archivos_maestros[0]
         df_maestro = pd.read_excel(ruta_maestro) 
         
-        # --- FUSIÓN AUTOMÁTICA CON EL BOT DE DRIVE ---
+        # 1. Preparamos los IDs del maestro primero para usarlos como diccionario de búsqueda
+        if 'Link_Ficha' in df_maestro.columns:
+            df_maestro = df_maestro.drop(columns=['Link_Ficha'])
+        df_maestro['Equipo_str'] = df_maestro['equipo'].apply(normalizar_id_universal)
+        equipos_conocidos = df_maestro['Equipo_str'].dropna().unique()
+        
+        # 2. FUSIÓN SÚPER INTELIGENTE CON EL BOT DE DRIVE
         RUTA_FICHAS = 'datos_samm/Fichas_Drive.xlsx'
         if os.path.exists(RUTA_FICHAS):
             df_fichas = pd.read_excel(RUTA_FICHAS)
             
-            # Francotirador: Busca los números justo antes de la extensión del archivo (ej. .xlsx o .pdf)
+            # Nuevo Francotirador: Busca si el ID exacto del maestro está oculto en el nombre del archivo de Drive
             def extraer_numero_ficha(nombre):
+                nombre_limpio = str(nombre).upper().replace(" ", "").replace("-", "")
+                
+                # Escanea cada equipo conocido y revisa si su ID está dentro del nombre del archivo
+                for eq in equipos_conocidos:
+                    eq_limpio = str(eq).upper().replace(" ", "").replace("-", "")
+                    if eq_limpio != "" and eq_limpio in nombre_limpio:
+                        return eq # ¡Match exacto! Ignorando espacios y palabras extra
+                
+                # Plan de respaldo
                 match = re.search(r'(\d+)\.\w+$', str(nombre).strip(), re.IGNORECASE)
                 if match: return match.group(1)
                 return str(nombre)
                 
             df_fichas['Equipo_str'] = df_fichas['Nombre_Archivo'].apply(extraer_numero_ficha)
             
-            if 'Link_Ficha' in df_maestro.columns:
-                df_maestro = df_maestro.drop(columns=['Link_Ficha'])
-                
-            df_maestro['Equipo_str'] = df_maestro['equipo'].apply(normalizar_id_universal)
-            
-            # Cruzamos los datos (eliminando duplicados por si el bot leyó un archivo 2 veces)
+            # Cruzamos los datos
             df_fichas_unicas = df_fichas.drop_duplicates(subset=['Equipo_str'], keep='first')
             df_maestro = pd.merge(df_maestro, df_fichas_unicas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
-            df_maestro = df_maestro.drop(columns=['Equipo_str'])
             
+        df_maestro = df_maestro.drop(columns=['Equipo_str'])
         st.session_state['df_base_maestra'] = df_maestro
         
     except Exception as e:
