@@ -788,44 +788,4 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
         file_name="Directorio_Dinomontacargas.xlsx",
         mime="application/vnd.ms-excel"
     )
-
-# =========================================================
-# NUEVO: MÓDULO SATÉLITE - FICHAS TÉCNICAS (EL VIGÍA)
-# =========================================================
-RUTA_FICHAS = 'datos_samm/Base_Fichas.xlsx'
-
-# 1. Si el archivo no existe, lo creamos en blanco para que no falle
-if not os.path.exists(RUTA_FICHAS):
-    df_fichas = pd.DataFrame({
-        'Equipo': df_master['Equipo'].unique(),
-        'Link_Ficha': [""] * len(df_master['Equipo'].unique())
-    })
-    df_fichas.to_excel(RUTA_FICHAS, index=False)
-else:
-    df_fichas = pd.read_excel(RUTA_FICHAS)
-
-# 2. El Vigía: Revisar si llegaron equipos nuevos de SAMM que no estén en Fichas
-equipos_maestra = set(df_master['Equipo'].dropna().astype(str).unique())
-equipos_fichas = set(df_fichas['Equipo'].dropna().astype(str).unique())
-equipos_nuevos = equipos_maestra - equipos_fichas
-
-if equipos_nuevos:
-    # Agregar los equipos nuevos a la base de fichas en blanco
-    df_nuevos = pd.DataFrame({
-        'Equipo': list(equipos_nuevos),
-        'Link_Ficha': [""] * len(equipos_nuevos)
-    })
-    df_fichas = pd.concat([df_fichas, df_nuevos], ignore_index=True)
-    df_fichas.to_excel(RUTA_FICHAS, index=False)
-
-# 3. Fusión: Pegar el Link de la ficha a la memoria de la aplicación
-# Limpiamos primero por si acaso la columna ya venía en el Excel original
-if 'Link_Ficha' in df_master.columns:
-    df_master = df_master.drop(columns=['Link_Ficha'])
-
-df_master['Equipo_str'] = df_master['Equipo'].astype(str)
-df_fichas['Equipo_str'] = df_fichas['Equipo'].astype(str)
-
-df_master = pd.merge(df_master, df_fichas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
-df_master = df_master.drop(columns=['Equipo_str'])
-# =========================================================
+    
