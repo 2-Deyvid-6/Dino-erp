@@ -48,7 +48,35 @@ if 'df_base_maestra' not in st.session_state:
         
     try:
         ruta_maestro = archivos_maestros[0]
-        st.session_state['df_base_maestra'] = pd.read_excel(ruta_maestro) 
+        df_maestro = pd.read_excel(ruta_maestro) 
+        
+        # --- RECUPERANDO EL VIGÍA DE FICHAS PARA LOS LINKS EXACTOS ---
+        RUTA_FICHAS = 'datos_samm/Base_Fichas.xlsx'
+        if not os.path.exists(RUTA_FICHAS):
+            df_fichas = pd.DataFrame({'Equipo': df_maestro['equipo'].unique(), 'Link_Ficha': [""] * len(df_maestro['equipo'].unique())})
+            df_fichas.to_excel(RUTA_FICHAS, index=False)
+        else:
+            df_fichas = pd.read_excel(RUTA_FICHAS)
+            
+        equipos_maestra = set(df_maestro['equipo'].dropna().astype(str).unique())
+        equipos_fichas = set(df_fichas['Equipo'].dropna().astype(str).unique())
+        equipos_nuevos = equipos_maestra - equipos_fichas
+        
+        if equipos_nuevos:
+            df_nuevos = pd.DataFrame({'Equipo': list(equipos_nuevos), 'Link_Ficha': [""] * len(equipos_nuevos)})
+            df_fichas = pd.concat([df_fichas, df_nuevos], ignore_index=True)
+            df_fichas.to_excel(RUTA_FICHAS, index=False)
+            
+        if 'Link_Ficha' in df_maestro.columns:
+            df_maestro = df_maestro.drop(columns=['Link_Ficha'])
+            
+        df_maestro['Equipo_str'] = df_maestro['equipo'].astype(str)
+        df_fichas['Equipo_str'] = df_fichas['Equipo'].astype(str)
+        df_maestro = pd.merge(df_maestro, df_fichas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
+        df_maestro = df_maestro.drop(columns=['Equipo_str'])
+        
+        st.session_state['df_base_maestra'] = df_maestro
+        
     except Exception as e:
         st.error(f"⚠️ Error crítico al leer la Base Maestra. Detalle: {e}")
         st.stop()
@@ -679,54 +707,106 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
         st.dataframe(df_predictivo[['Equipo', 'Tercero', 'Horometro Actual', 'Ultimo_Mantenimiento', 'Horometro_Base_Ciclo', 'Horas_Faltantes', 'Tipo_Mantenimiento', 'Estado_Insumos']], hide_index=True)
 
 # =====================================================================
-# 🚜 MÓDULO 3: DIRECTORIO DE FLOTA
+# 🚜 MÓDULO 3: DIRECTORIO DE FLOTA (NUEVO DISEÑO CON TARJETAS)
 # =====================================================================
 elif menu_seleccionado == "🚜 3. Directorio de Flota":
     st.title("🚜 Directorio Global de Flota")
     st.markdown("---")
     
     df_dir = st.session_state['df_base_maestra'].copy()
-    
-    # --- EXTRACTOR INTELIGENTE DE IDs PARA GOOGLE DRIVE ---
-    def normalizar_para_drive(val):
-        val_str = str(val).strip()
-        # Si tiene corchetes (Ej: [ 191 ]), saca solo el número
-        match = re.search(r'\[\s*(\d+)\s*\]', val_str)
-        if match: return match.group(1)
-        # Si termina en .0 lo limpia
-        if val_str.endswith('.0'): return val_str[:-2]
-        return val_str
-
-    busqueda = st.text_input("🔍 Buscar por Número de Equipo, Cliente, Modelo o Sucursal:")
-    
-    if busqueda:
-        df_dir = df_dir[df_dir.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)]
-        
-        # --- EL PLAN B: BOTÓN DE BÚSQUEDA DINÁMICA ---
-        if not df_dir.empty:
-            # Tomamos el número exacto del primer equipo que apareció en la búsqueda
-            equipo_raw = df_dir['equipo'].iloc[0]
-            equipo_limpio = normalizar_para_drive(equipo_raw)
-            
-            # Construimos el link mágico de Google Drive
-            link_drive = f"https://drive.google.com/drive/search?q={equipo_limpio}"
-            
-            st.info(f"💡 ¿Necesitas ver la ficha técnica del equipo **{equipo_raw}**?")
-            st.link_button(f"🔍 BUSCAR FICHA EN DRIVE ({equipo_limpio})", link_drive, type="primary")
-
-    # PRIORIDAD ESTRICTA A LA SUCURSAL
     col_ubi_dir = 'Sucursal' if 'Sucursal' in df_dir.columns else 'sucursal' if 'sucursal' in df_dir.columns else 'Ubicacion'
-    columnas_dir = ['equipo', 'Tercero', col_ubi_dir, 'Modelo', 'Horometro Actual']
+
+    # --- PANEL ADMINISTRADOR (PARA ENLAZAR FICHAS MANUALMENTE) ---
+    with st.expander("🔗 Panel Administrador: Enlazar Fichas de Drive (Requerido)", expanded=False):
+        st.info("Pega aquí los enlaces directos de Google Drive. Esto permite abrir los archivos sin pasar por el buscador de Google.")
         
-    st.dataframe(df_dir[columnas_dir], use_container_width=True, hide_index=True)
+        # Leemos directo del Vigía satélite
+        df_editor_fichas = pd.read_excel('datos_samm/Base_Fichas.xlsx')
+        df_editor_fichas['Equipo'] = df_editor_fichas['Equipo'].astype(str)
+        df_editor_fichas['Link_Ficha'] = df_editor_fichas['Link_Ficha'].fillna("").astype(str)
+        
+        df_editado_fichas = st.data_editor(
+            df_editor_fichas,
+            column_config={
+                "Equipo": st.column_config.TextColumn("Equipo (Bloqueado)", disabled=True),
+                "Link_Ficha": st.column_config.LinkColumn("🔗 Enlace exacto de Google Drive")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+        if not df_editor_fichas.equals(df_editado_fichas):
+            df_editado_fichas.to_excel('datos_samm/Base_Fichas.xlsx', index=False)
+            st.success("✅ ¡Link guardado en la base de datos! Recargando...")
+            st.rerun()
+
+    # --- BUSCADOR SEGMENTADO ---
+    st.subheader("🔍 Buscador Segmentado")
+    c1, c2, c3 = st.columns(3)
     
-    buffer_dir = io.BytesIO()
-    with pd.ExcelWriter(buffer_dir, engine='xlsxwriter') as writer:
-        df_dir[columnas_dir].to_excel(writer, sheet_name='Directorio', index=False)
+    with c1:
+        lista_clientes = ["Todos"] + sorted(df_dir['Tercero'].dropna().astype(str).unique())
+        filtro_cliente = st.selectbox("🏢 Filtrar por Cliente:", lista_clientes)
+    with c2:
+        lista_modelos = ["Todos"] + sorted(df_dir['Modelo'].dropna().astype(str).unique())
+        filtro_modelo = st.selectbox("⚙️ Filtrar por Modelo:", lista_modelos)
+    with c3:
+        filtro_equipo = st.text_input("🔢 Número de Equipo o Serial:")
+
+    # Aplicar los filtros
+    df_filtrado = df_dir.copy()
+    if filtro_cliente != "Todos":
+        df_filtrado = df_filtrado[df_filtrado['Tercero'].astype(str) == filtro_cliente]
+    if filtro_modelo != "Todos":
+        df_filtrado = df_filtrado[df_filtrado['Modelo'].astype(str) == filtro_modelo]
+    if filtro_equipo:
+        df_filtrado = df_filtrado[df_filtrado['equipo'].astype(str).str.contains(filtro_equipo, case=False)]
+
+    st.markdown("---")
+    
+    # --- PANTALLA DIVIDIDA: TABLA A LA IZQUIERDA, TARJETA A LA DERECHA ---
+    col_tabla, col_tarjeta = st.columns([2, 1])
+
+    with col_tabla:
+        st.markdown("### 📋 Resultados de Búsqueda")
+        columnas_ver = ['equipo', 'Tercero', col_ubi_dir, 'Modelo']
+        st.dataframe(df_filtrado[columnas_ver], use_container_width=True, hide_index=True)
         
-    st.download_button(
-        label="📥 Descargar Directorio de Pantalla (Excel)",
-        data=buffer_dir.getvalue(),
-        file_name="Directorio_Dinomontacargas.xlsx",
-        mime="application/vnd.ms-excel"
-    )
+        buffer_dir = io.BytesIO()
+        with pd.ExcelWriter(buffer_dir, engine='xlsxwriter') as writer:
+            df_filtrado[columnas_ver].to_excel(writer, sheet_name='Directorio', index=False)
+        st.download_button("📥 Descargar Tabla Filtrada", buffer_dir.getvalue(), "Directorio_Filtrado.xlsx", "application/vnd.ms-excel")
+
+    with col_tarjeta:
+        st.markdown("### 🪪 Tarjeta de Equipo")
+        if not df_filtrado.empty:
+            equipo_seleccionado = st.selectbox("👉 Selecciona el equipo para ver el detalle:", df_filtrado['equipo'].astype(str).unique())
+            
+            # Extraer los datos exactos del equipo seleccionado
+            datos_equipo = df_filtrado[df_filtrado['equipo'].astype(str) == equipo_seleccionado].iloc[0]
+            
+            with st.container(border=True):
+                st.info(f"#### Equipo: {datos_equipo['equipo']}")
+                st.write(f"**🏢 Cliente:** {datos_equipo.get('Tercero', 'No registrado')}")
+                st.write(f"**📍 Ubicación:** {datos_equipo.get(col_ubi_dir, 'No registrada')}")
+                st.write(f"**⚙️ Modelo:** {datos_equipo.get('Modelo', 'No registrado')}")
+                
+                # Se agrega el serial (Verifica que la columna Serial o número similar exista en tu Excel Maestro)
+                serial = datos_equipo.get('Serial', datos_equipo.get('serial', 'No registrado'))
+                st.write(f"**🔢 Serial:** {serial}")
+                
+                horometro = datos_equipo.get('Horometro Actual', 'No registrado')
+                if pd.notna(horometro):
+                    st.write(f"**⏱️ Horómetro:** {horometro}")
+                else:
+                    st.write("**⏱️ Horómetro:** No registrado")
+
+                st.markdown("---")
+                
+                # --- BOTÓN PARA ABRIR LA FICHA DIRECTAMENTE ---
+                link = datos_equipo.get('Link_Ficha', '')
+                if pd.notna(link) and str(link).strip() != "":
+                    st.link_button("📄 ABRIR FICHA TÉCNICA", str(link).strip(), type="primary", use_container_width=True)
+                else:
+                    st.warning("⚠️ Este equipo no tiene una ficha técnica enlazada. Ve al 'Panel Administrador' arriba para agregar el enlace.")
+        else:
+            st.warning("No se encontraron equipos con los filtros aplicados.")
