@@ -735,6 +735,10 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
         # Cargamos directo del archivo satélite para guardar rápido
         df_editor_fichas = pd.read_excel('datos_samm/Base_Fichas.xlsx')
         
+        # ---> EL ESCUDO: Forzamos a que todo sea texto para que Streamlit no colapse <---
+        df_editor_fichas['Equipo'] = df_editor_fichas['Equipo'].astype(str)
+        df_editor_fichas['Link_Ficha'] = df_editor_fichas['Link_Ficha'].fillna("").astype(str)
+        
         df_editado_fichas = st.data_editor(
             df_editor_fichas,
             column_config={
@@ -751,9 +755,7 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
             df_editado_fichas.to_excel('datos_samm/Base_Fichas.xlsx', index=False)
             st.success("✅ ¡Link guardado en la base de datos de Fichas!")
             st.rerun() # Recarga la app para aplicar el cambio instantáneamente
-            
-    st.write("---")
-
+        
     # =========================================================
     # BUSCADOR Y VISOR DE FLOTA
     # =========================================================
@@ -788,4 +790,3 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
         file_name="Directorio_Dinomontacargas.xlsx",
         mime="application/vnd.ms-excel"
     )
-    
