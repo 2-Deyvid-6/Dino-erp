@@ -40,70 +40,65 @@ with st.sidebar:
     archivo_samm = st.file_uploader("Cargar SAMM", type=["xls", "xlsx"], key="samm")
     
 # =====================================================================
-# --- CEREBRO GLOBAL: LECTURA DE LA BASE MAESTRA ---
+# --- CEREBRO GLOBAL: CONEXIÓN EN VIVO A SQL SERVER (SAMM) ---
 # =====================================================================
 if 'df_base_maestra' not in st.session_state:
-    if not os.path.exists("datos_samm"):
-        st.error("⚠️ La carpeta 'datos_samm' no existe. Por favor, créala y mete tu base de equipos ahí.")
-        st.stop()
-        
-    archivos = glob.glob("datos_samm/*.xls*")
-    archivos_maestros = [f for f in archivos if "Control_Mantenimiento" not in f and "Base_Fichas" not in f and "Fichas_Drive" not in f]
-    
-    if not archivos_maestros:
-        st.error("⚠️ La carpeta 'datos_samm' está vacía. Coloca tu archivo de equipos ahí.")
-        st.stop()
-        
     try:
-        ruta_maestro = archivos_maestros[0]
-        df_maestro = pd.read_excel(ruta_maestro) 
+        # 1. Conexión segura usando la bóveda secrets.toml
+        conn = st.connection("samm_bd", type="sql")
         
-        # 1. Preparamos los IDs y los ORDENAMOS por longitud (el más largo primero)
-        if 'Link_Ficha' in df_maestro.columns:
-            df_maestro = df_maestro.drop(columns=['Link_Ficha'])
+        # 2. Consulta SQL: Extraemos la radiografía exacta de los equipos
+        # (Traemos el código, serial, cliente, sucursal y el horómetro en vivo)
+        query_maestro = """
+            SELECT 
+                equipo_codigo AS equipo,
+                equipo_serial AS Serial,
+                ter_tercero_tercero AS Tercero,
+                ter_sucursal_sucursal AS Sucursal,
+                horometroActual AS [Horometro Actual]
+            FROM view_equ_equipo
+            WHERE ter_tercero_tercero IS NOT NULL 
+            -- Aquí luego filtraremos los vendidos cuando confirmemos la columna de estado
+        """
         
+        # Ejecutamos la consulta. TTL=3600 significa que guarda en caché por 1 hora para no saturar SAMM
+        df_maestro = conn.query(query_maestro, ttl=3600)
+        
+        # 3. Limpiamos y preparamos los IDs para el cruce con Drive
         df_maestro['Equipo_str'] = df_maestro['equipo'].apply(normalizar_id_universal)
-        
-        # MAGIA: Ordenar de mayor a menor longitud. Así "191" se evalúa antes que "1" o "T1"
         equipos_conocidos = sorted(df_maestro['Equipo_str'].dropna().unique(), key=lambda x: len(str(x)), reverse=True)
         
-        # 2. FUSIÓN SÚPER INTELIGENTE CON EL BOT DE DRIVE
+        # 4. FUSIÓN SÚPER INTELIGENTE CON EL BOT DE DRIVE
         RUTA_FICHAS = 'datos_samm/Fichas_Drive.xlsx'
         if os.path.exists(RUTA_FICHAS):
             df_fichas = pd.read_excel(RUTA_FICHAS)
             
             def extraer_numero_ficha(nombre):
                 nombre_str = str(nombre).upper()
-                
-                # Búsqueda Prioritaria: Buscar el ID exacto (ej: "PWK 765" o "191") en el nombre original
                 for eq in equipos_conocidos:
                     eq_str = str(eq).upper().strip()
-                    if eq_str != "" and eq_str in nombre_str:
-                        return eq 
+                    if eq_str != "" and eq_str in nombre_str: return eq 
                 
-                # Búsqueda Agresiva: Si hay guiones o espacios raros, limpiamos todo y volvemos a intentar
                 nombre_limpio = nombre_str.replace(" ", "").replace("-", "").replace("_", "")
                 for eq in equipos_conocidos:
                     eq_limpio = str(eq).upper().replace(" ", "").replace("-", "").replace("_", "")
-                    if eq_limpio != "" and eq_limpio in nombre_limpio:
-                        return eq
+                    if eq_limpio != "" and eq_limpio in nombre_limpio: return eq
                 
-                # Plan de respaldo (Si todo falla)
                 match = re.search(r'(\d+)\.\w+$', str(nombre).strip(), re.IGNORECASE)
                 if match: return match.group(1)
                 return str(nombre)
                 
             df_fichas['Equipo_str'] = df_fichas['Nombre_Archivo'].apply(extraer_numero_ficha)
-            
-            # Cruzamos los datos asegurando que no haya duplicados
             df_fichas_unicas = df_fichas.drop_duplicates(subset=['Equipo_str'], keep='first')
+            
+            # Unimos los links de Drive a la tabla que vino de SQL
             df_maestro = pd.merge(df_maestro, df_fichas_unicas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
             
         df_maestro = df_maestro.drop(columns=['Equipo_str'])
         st.session_state['df_base_maestra'] = df_maestro
         
     except Exception as e:
-        st.error(f"⚠️ Error crítico al leer la Base Maestra o Fichas. Detalle: {e}")
+        st.error(f"⚠️ Error crítico de conexión a la Base de Datos SAMM. Detalle: {e}")
         st.stop()
 
 # =====================================================================
