@@ -1,8 +1,9 @@
 streamlit
 pandas
-fpdf2
-python-docx
+SQLAlchemy
+pyodbc
 openpyxl
 xlsxwriter
 xlrd
-sqlalchemy
+python-docx
+fpdf2
