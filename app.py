@@ -47,28 +47,31 @@ if 'df_base_maestra' not in st.session_state:
         # 1. Conexión segura usando la bóveda secrets.toml
         conn = st.connection("samm_bd", type="sql")
         
-        # 2. Consulta SQL: Extraemos la radiografía exacta de los equipos
-        # (Traemos el código, serial, cliente, sucursal y el horómetro en vivo)
+        # 2. Consulta SQL: Extraemos los campos reales mapeados de view_equ_equipo
         query_maestro = """
-            SELECT 
-                equipo_codigo AS equipo,
+            SELECT TOP 500
+                equipo AS equipo,
                 equipo_serial AS Serial,
                 ter_tercero_tercero AS Tercero,
                 ter_sucursal_sucursal AS Sucursal,
-                horometroActual AS [Horometro Actual]
+                horometroActual AS [Horometro Actual],
+                [cat_catalogo.equipo_catalogo.equipo] AS Modelo
             FROM view_equ_equipo
             WHERE ter_tercero_tercero IS NOT NULL 
-            -- Aquí luego filtraremos los vendidos cuando confirmemos la columna de estado
         """
         
-        # Ejecutamos la consulta. TTL=3600 significa que guarda en caché por 1 hora para no saturar SAMM
+        # Ejecutamos la consulta. TTL=3600 guarda en caché por 1 hora
         df_maestro = conn.query(query_maestro, ttl=3600)
         
+        # Si la columna 'Modelo' no viene en la vista, creamos un fallback
+        if 'Modelo' not in df_maestro.columns:
+            df_maestro['Modelo'] = "SIN REGISTRO"
+            
         # 3. Limpiamos y preparamos los IDs para el cruce con Drive
         df_maestro['Equipo_str'] = df_maestro['equipo'].apply(normalizar_id_universal)
         equipos_conocidos = sorted(df_maestro['Equipo_str'].dropna().unique(), key=lambda x: len(str(x)), reverse=True)
         
-        # 4. FUSIÓN SÚPER INTELIGENTE CON EL BOT DE DRIVE
+        # 4. FUSIÓN CON EL BOT DE DRIVE
         RUTA_FICHAS = 'datos_samm/Fichas_Drive.xlsx'
         if os.path.exists(RUTA_FICHAS):
             df_fichas = pd.read_excel(RUTA_FICHAS)
@@ -91,10 +94,9 @@ if 'df_base_maestra' not in st.session_state:
             df_fichas['Equipo_str'] = df_fichas['Nombre_Archivo'].apply(extraer_numero_ficha)
             df_fichas_unicas = df_fichas.drop_duplicates(subset=['Equipo_str'], keep='first')
             
-            # Unimos los links de Drive a la tabla que vino de SQL
             df_maestro = pd.merge(df_maestro, df_fichas_unicas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
             
-        df_maestro = df_maestro.drop(columns=['Equipo_str'])
+        df_maestro = df_maestro.drop(columns=['Equipo_str'], errors='ignore')
         st.session_state['df_base_maestra'] = df_maestro
         
     except Exception as e:
@@ -230,7 +232,9 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                 st.subheader("🚨 Equipos Sin Cronograma de Mantenimiento")
                 equipos_en_samm = df_limpio['Equipo'].unique()
                 df_faltantes = df_maestro_actual[~df_maestro_actual['equipo_clean'].isin(equipos_en_samm)]
-                df_faltantes_mostrar = df_faltantes[['equipo_clean', 'Tercero', col_ubi, 'Modelo', 'Horometro Actual']].dropna(subset=['Tercero'])
+                
+                col_mod = 'Modelo' if 'Modelo' in df_faltantes.columns else df_faltantes.columns[0]
+                df_faltantes_mostrar = df_faltantes[['equipo_clean', 'Tercero', col_ubi, col_mod, 'Horometro Actual']].dropna(subset=['Tercero'])
                 df_faltantes_mostrar.rename(columns={'equipo_clean': 'equipo'}, inplace=True)
                 
                 if not df_faltantes_mostrar.empty:
@@ -606,7 +610,7 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
                 posibles_nombres = [c for c in df_filtrado.columns if 'serial' in str(c).lower() or 'serie' in str(c).lower() or 'chasis' in str(c).lower()]
                 columna_serial_real = posibles_nombres[0] if posibles_nombres else None
                 
-                serial = datos_equipo.get(columna_serial_real, 'No registrado') if columna_serial_real else 'Columna no encontrada en Excel'
+                serial = datos_equipo.get(columna_serial_real, 'No registrado') if columna_serial_real else 'Columna no encontrada'
                 st.write(f"**🔢 Serial:** {serial}")
                 
                 horometro = datos_equipo.get('Horometro Actual', 'No registrado')
