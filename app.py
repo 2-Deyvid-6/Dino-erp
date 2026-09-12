@@ -48,30 +48,62 @@ if 'df_base_maestra' not in st.session_state:
         conn = st.connection("sw_dino", type="sql")
         
         # 2. Consulta SQL: Extraemos los campos reales mapeados de view_equ_equipo
+        # Incluimos intentos para traer el Subtipo Catalogo
         query_maestro = """
-            SELECT TOP 500
+            SELECT TOP 1000
                 equipo AS equipo,
                 equipo_serial AS Serial,
                 ter_tercero_tercero AS Tercero,
                 ter_sucursal_sucursal AS Sucursal,
                 horometroActual AS [Horometro Actual],
-                [cat_catalogo.equipo_catalogo.equipo] AS Modelo
+                [cat_catalogo.equipo_catalogo.equipo] AS Modelo,
+                -- Intentamos extraer el Subtipo. Si el nombre de la columna es diferente, 
+                -- se manejará en el bloque try/except de más abajo.
+                cat_subtipoCatalogo_subtipoCatalogo AS Subtipo_Catalogo
             FROM view_equ_equipo
             WHERE ter_tercero_tercero IS NOT NULL 
         """
         
-        # Ejecutamos la consulta. TTL=3600 guarda en caché por 1 hora
-        df_maestro = conn.query(query_maestro, ttl=3600)
-        
+        # Ejecutamos la consulta. Si falla porque no encuentra 'cat_subtipoCatalogo_subtipoCatalogo',
+        # ejecutamos una consulta alternativa sin esa columna específica o con un nombre genérico
+        try:
+            df_maestro = conn.query(query_maestro, ttl=3600)
+        except:
+             # Fallback si el nombre de la columna del Subtipo no es el estándar
+             query_maestro_alt = """
+                SELECT TOP 1000
+                    equipo AS equipo,
+                    equipo_serial AS Serial,
+                    ter_tercero_tercero AS Tercero,
+                    ter_sucursal_sucursal AS Sucursal,
+                    horometroActual AS [Horometro Actual],
+                    [cat_catalogo.equipo_catalogo.equipo] AS Modelo
+                FROM view_equ_equipo
+                WHERE ter_tercero_tercero IS NOT NULL 
+            """
+             df_maestro = conn.query(query_maestro_alt, ttl=3600)
+             # Buscamos si hay alguna columna que parezca contener el "Subtipo"
+             columnas_subtipo = [col for col in df_maestro.columns if 'subtipo' in col.lower() or 'componente' in col.lower()]
+             if columnas_subtipo:
+                 df_maestro['Subtipo_Catalogo'] = df_maestro[columnas_subtipo[0]]
+             else:
+                 # Si definitivamente no la encontramos en la vista, creamos una vacía para no romper el código
+                 df_maestro['Subtipo_Catalogo'] = ""
+
         # Si la columna 'Modelo' no viene en la vista, creamos un fallback
         if 'Modelo' not in df_maestro.columns:
             df_maestro['Modelo'] = "SIN REGISTRO"
             
-        # 3. Limpiamos y preparamos los IDs para el cruce con Drive
+        # 3. FILTRO DE LIMPIEZA DE COMPONENTES POR SUBTIPO
+        if 'Subtipo_Catalogo' in df_maestro.columns:
+            # Filtramos para quedarnos solo con aquellos donde el Subtipo NO sea 'Componente'
+            df_maestro = df_maestro[~df_maestro['Subtipo_Catalogo'].astype(str).str.contains('Componente', case=False, na=False)].copy()
+
+        # 4. Limpiamos y preparamos los IDs para el cruce con Drive
         df_maestro['Equipo_str'] = df_maestro['equipo'].apply(normalizar_id_universal)
         equipos_conocidos = sorted(df_maestro['Equipo_str'].dropna().unique(), key=lambda x: len(str(x)), reverse=True)
         
-        # 4. FUSIÓN CON EL BOT DE DRIVE
+        # 5. FUSIÓN CON EL BOT DE DRIVE
         RUTA_FICHAS = 'datos_samm/Fichas_Drive.xlsx'
         if os.path.exists(RUTA_FICHAS):
             df_fichas = pd.read_excel(RUTA_FICHAS)
@@ -97,6 +129,7 @@ if 'df_base_maestra' not in st.session_state:
             df_maestro = pd.merge(df_maestro, df_fichas_unicas[['Equipo_str', 'Link_Ficha']], on='Equipo_str', how='left')
             
         df_maestro = df_maestro.drop(columns=['Equipo_str'], errors='ignore')
+        
         st.session_state['df_base_maestra'] = df_maestro
         
     except Exception as e:
@@ -554,10 +587,24 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
     df_dir = st.session_state['df_base_maestra'].copy()
     col_ubi_dir = 'Sucursal' if 'Sucursal' in df_dir.columns else 'sucursal' if 'sucursal' in df_dir.columns else 'Ubicacion'
 
-    # --- 1. CONSULTA DE NOVEDADES REALES DESDE SQL SERVER ---
+    # --- 1. CONSULTAS REALES DESDE SQL SERVER ---
     try:
         conn = st.connection("sw_dino", type="sql")
         
+        # A) Extraer estado físico para aislar Vendidos y Fuera de Servicio
+        try:
+            query_estados = "SELECT equipo, estadoEquipo AS Estado_Fisico FROM view_equ_equipo"
+            df_estados = conn.query(query_estados, ttl=30)
+            mapa_estados_fisicos = dict(zip(df_estados['equipo'].astype(str).str.strip(), df_estados['Estado_Fisico'].astype(str).str.strip()))
+        except:
+            try:
+                query_estados_alt = "SELECT equipo, equ_estadoEquipo_estadoEquipo AS Estado_Fisico FROM view_equ_equipo"
+                df_estados = conn.query(query_estados_alt, ttl=30)
+                mapa_estados_fisicos = dict(zip(df_estados['equipo'].astype(str).str.strip(), df_estados['Estado_Fisico'].astype(str).str.strip()))
+            except:
+                mapa_estados_fisicos = {}
+
+        # B) Extraer el historial de Novedades / Solicitudes
         query_todas_solicitudes = """
             SELECT 
                 equ_equipo_equipo AS Equipo,
@@ -572,10 +619,9 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
         
         if not df_solicitudes_raw.empty:
             df_solicitudes_raw['Fecha'] = pd.to_datetime(df_solicitudes_raw['Fecha']).dt.strftime('%d/%m/%Y %I:%M %p')
-            
-            # Extraer el estado más reciente por equipo
             df_ultimos_estados = df_solicitudes_raw.drop_duplicates(subset=['Equipo'], keep='first').copy()
             
+            # Lógica individual: 3 estados para identificar exactamente en qué está cada equipo
             def clasificar_estado(est_str):
                 est_str = str(est_str).lower().strip()
                 if any(k in est_str for k in ['nueva', 'solicitado', 'abierto', 'pendiente', 'registrado']):
@@ -594,46 +640,70 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
     except Exception as e:
         st.error(f"⚠️ Error conectando a la base de datos de SAMM: {e}")
         mapa_estados = {}
+        mapa_estados_fisicos = {}
         df_solicitudes_raw = pd.DataFrame()
 
-    # Mapear estado real sobre la flota maestro
+
+    # --- 2. LÓGICA MATEMÁTICA Y DESCARTES ---
+    df_dir['Estado_Fisico'] = df_dir['equipo'].astype(str).str.strip().map(mapa_estados_fisicos).fillna("Activo")
+    
+    # 1. EXPULSAR VENDIDOS
+    df_dir = df_dir[~df_dir['Estado_Fisico'].str.contains('vendido', case=False, na=False)]
+    
+    # 2. Asignar novedades a los que quedan
     df_dir['Categoria_Estado'] = df_dir['equipo'].astype(str).str.strip().map(mapa_estados).fillna("🟢 Sin Novedad")
 
-    # --- 2. INDICADORES KPI (ESTADO DE LA FLOTA EN VIVO) ---
+    # 3. AISLAR Y RESTAR "FUERA DE SERVICIO"
+    df_dir.loc[df_dir['Estado_Fisico'].str.contains('fuera de servicio', case=False, na=False), 'Categoria_Estado'] = "⚪ Fuera de Servicio"
+
+
+    # --- 3. INDICADORES KPI (Agrupados para Estadística General) ---
     total_equipos = len(df_dir)
     con_novedad = len(df_dir[df_dir['Categoria_Estado'] == '🔴 Novedad Nueva'])
+    fuera_servicio = len(df_dir[df_dir['Categoria_Estado'] == '⚪ Fuera de Servicio'])
+    
+    # Agrupamos Verde y Amarillo solo para el KPI estadístico
     en_proceso = len(df_dir[df_dir['Categoria_Estado'] == '🟡 En Proceso'])
-    sin_novedad = len(df_dir[df_dir['Categoria_Estado'] == '🟢 Sin Novedad'])
+    sanos = len(df_dir[df_dir['Categoria_Estado'] == '🟢 Sin Novedad'])
+    atendidas_total = en_proceso + sanos
     
     pct_novedad = (con_novedad / total_equipos * 100) if total_equipos > 0 else 0
-    pct_proceso = (en_proceso / total_equipos * 100) if total_equipos > 0 else 0
-    pct_sin = (sin_novedad / total_equipos * 100) if total_equipos > 0 else 0
+    pct_atendidas = (atendidas_total / total_equipos * 100) if total_equipos > 0 else 0
+    pct_fuera = (fuera_servicio / total_equipos * 100) if total_equipos > 0 else 0
     
-    c_kpi1, c_kpi2, c_kpi3 = st.columns(3)
+    c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
     
     c_kpi1.metric(
-        label="Novedades Nuevas", 
-        value=f"🔴 {con_novedad} equipos", 
-        delta=f"-{pct_novedad:.1f}% de la flota"
-    )
-    
-    c_kpi2.metric(
-        label="En Proceso", 
-        value=f"🟡 {en_proceso} equipos", 
-        delta=f"⚠️ {pct_proceso:.1f}% en atención",
+        label="Base Maestra", 
+        value=f"🚜 {total_equipos} equipos", 
+        delta="Total Flota Activa",
         delta_color="off"
     )
     
+    c_kpi2.metric(
+        label="Novedades Nuevas", 
+        value=f"🔴 {con_novedad} equipos", 
+        delta=f"-{pct_novedad:.1f}% de la flota",
+        delta_color="normal" 
+    )
+    
     c_kpi3.metric(
-        label="Sin Novedad", 
-        value=f"🟢 {sin_novedad} equipos", 
-        delta=f"+{pct_sin:.1f}% operativa",
+        label="Atendidas / Sin Novedad", 
+        value=f"🟢 {atendidas_total} equipos", 
+        delta=f"+{pct_atendidas:.1f}% operativa",
         delta_color="normal"
+    )
+
+    c_kpi4.metric(
+        label="Fuera de Servicio", 
+        value=f"⚪ {fuera_servicio} equipos", 
+        delta=f"{pct_fuera:.1f}% inactiva",
+        delta_color="off"
     )
     
     st.markdown("---")
 
-    # --- 3. BUSCADOR SEGMENTADO ---
+    # --- 4. BUSCADOR SEGMENTADO ---
     st.subheader("🔍 Buscador Segmentado")
     c1, c2, c3 = st.columns(3)
     
@@ -657,7 +727,7 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
 
     st.markdown("---")
     
-    # --- 4. LISTA DE EQUIPOS TIPO "CORTINA" (ACORDEÓN) ---
+    # --- 5. LISTA DE EQUIPOS TIPO "CORTINA" (ACORDEÓN) ---
     if df_filtrado.empty:
         st.warning("No se encontraron equipos con los filtros aplicados.")
     else:
@@ -668,7 +738,7 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
             tercero = str(row.get('Tercero', 'Sin Cliente'))
             sucursal = str(row.get(col_ubi_dir, 'Sin Sucursal'))
             modelo = str(row.get('Modelo', 'Sin Modelo'))
-            estado = row.get('Categoria_Estado', '🟢 Sin Novedad')
+            estado = row.get('Categoria_Estado', '🟢 Sin Novedad') # Se mostrará individualmente (🔴, 🟡, 🟢 o ⚪)
             
             posibles_nombres = [c for c in df_filtrado.columns if 'serial' in str(c).lower() or 'serie' in str(c).lower() or 'chasis' in str(c).lower()]
             columna_serial_real = posibles_nombres[0] if posibles_nombres else None
