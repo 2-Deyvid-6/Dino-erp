@@ -44,8 +44,8 @@ with st.sidebar:
 # =====================================================================
 if 'df_base_maestra' not in st.session_state:
     try:
-        # 1. Conexión segura usando la bóveda secrets.toml
-        conn = st.connection("samm_bd", type="sql")
+        # 1. Conexión segura usando la bóveda secrets.toml apuntando a PROD
+        conn = st.connection("sw_dino", type="sql")
         
         # 2. Consulta SQL: Extraemos los campos reales mapeados de view_equ_equipo
         query_maestro = """
@@ -546,27 +546,105 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
         st.dataframe(df_predictivo[['Equipo', 'Tercero', 'Horometro Actual', 'Ultimo_Mantenimiento', 'Horometro_Base_Ciclo', 'Horas_Faltantes', 'Tipo_Mantenimiento', 'Estado_Insumos']], hide_index=True)
 
 # =====================================================================
-# 🚜 MÓDULO 3: DIRECTORIO DE FLOTA
+# 🚜 MÓDULO 3: DIRECTORIO DE FLOTA Y NOVEDADES (DATOS REALES SAMM)
 # =====================================================================
 elif menu_seleccionado == "🚜 3. Directorio de Flota":
-    st.title("🚜 Directorio Global de Flota")
-    st.markdown("---")
+    st.title("🚜 Directorio Global de Flota y Novedades")
     
     df_dir = st.session_state['df_base_maestra'].copy()
     col_ubi_dir = 'Sucursal' if 'Sucursal' in df_dir.columns else 'sucursal' if 'sucursal' in df_dir.columns else 'Ubicacion'
 
-    # --- BUSCADOR SEGMENTADO ---
+    # --- 1. CONSULTA DE NOVEDADES REALES DESDE SQL SERVER ---
+    try:
+        conn = st.connection("sw_dino", type="sql")
+        
+        query_todas_solicitudes = """
+            SELECT 
+                equ_equipo_equipo AS Equipo,
+                fechaCreacion AS Fecha,
+                [documento.solicitud] AS Novedad,
+                solicitante AS Solicitante,
+                doc_documento_solicitud_doc_estadoTipoDocumento_estadoTipoDocumento AS Estado
+            FROM view_doc_documento_solicitud
+            ORDER BY fechaCreacion DESC
+        """
+        df_solicitudes_raw = conn.query(query_todas_solicitudes, ttl=30)
+        
+        if not df_solicitudes_raw.empty:
+            df_solicitudes_raw['Fecha'] = pd.to_datetime(df_solicitudes_raw['Fecha']).dt.strftime('%d/%m/%Y %I:%M %p')
+            
+            # Extraer el estado más reciente por equipo
+            df_ultimos_estados = df_solicitudes_raw.drop_duplicates(subset=['Equipo'], keep='first').copy()
+            
+            def clasificar_estado(est_str):
+                est_str = str(est_str).lower().strip()
+                if any(k in est_str for k in ['nueva', 'solicitado', 'abierto', 'pendiente', 'registrado']):
+                    return "🔴 Novedad Nueva"
+                elif any(k in est_str for k in ['proceso', 'asignado', 'en ejecucion', 'programado']):
+                    return "🟡 En Proceso"
+                else:
+                    return "🟢 Sin Novedad"
+                    
+            df_ultimos_estados['Categoria_Estado'] = df_ultimos_estados['Estado'].apply(clasificar_estado)
+            mapa_estados = dict(zip(df_ultimos_estados['Equipo'].astype(str).str.strip(), df_ultimos_estados['Categoria_Estado']))
+        else:
+            mapa_estados = {}
+            df_solicitudes_raw = pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"⚠️ Error conectando a la base de datos de SAMM: {e}")
+        mapa_estados = {}
+        df_solicitudes_raw = pd.DataFrame()
+
+    # Mapear estado real sobre la flota maestro
+    df_dir['Categoria_Estado'] = df_dir['equipo'].astype(str).str.strip().map(mapa_estados).fillna("🟢 Sin Novedad")
+
+    # --- 2. INDICADORES KPI (ESTADO DE LA FLOTA EN VIVO) ---
+    total_equipos = len(df_dir)
+    con_novedad = len(df_dir[df_dir['Categoria_Estado'] == '🔴 Novedad Nueva'])
+    en_proceso = len(df_dir[df_dir['Categoria_Estado'] == '🟡 En Proceso'])
+    sin_novedad = len(df_dir[df_dir['Categoria_Estado'] == '🟢 Sin Novedad'])
+    
+    pct_novedad = (con_novedad / total_equipos * 100) if total_equipos > 0 else 0
+    pct_proceso = (en_proceso / total_equipos * 100) if total_equipos > 0 else 0
+    pct_sin = (sin_novedad / total_equipos * 100) if total_equipos > 0 else 0
+    
+    c_kpi1, c_kpi2, c_kpi3 = st.columns(3)
+    
+    c_kpi1.metric(
+        label="Novedades Nuevas", 
+        value=f"🔴 {con_novedad} equipos", 
+        delta=f"-{pct_novedad:.1f}% de la flota"
+    )
+    
+    c_kpi2.metric(
+        label="En Proceso", 
+        value=f"🟡 {en_proceso} equipos", 
+        delta=f"⚠️ {pct_proceso:.1f}% en atención",
+        delta_color="off"
+    )
+    
+    c_kpi3.metric(
+        label="Sin Novedad", 
+        value=f"🟢 {sin_novedad} equipos", 
+        delta=f"+{pct_sin:.1f}% operativa",
+        delta_color="normal"
+    )
+    
+    st.markdown("---")
+
+    # --- 3. BUSCADOR SEGMENTADO ---
     st.subheader("🔍 Buscador Segmentado")
     c1, c2, c3 = st.columns(3)
     
     with c1:
         lista_clientes = ["Todos"] + sorted(df_dir['Tercero'].dropna().astype(str).unique())
-        filtro_cliente = st.selectbox("🏢 Filtrar por Cliente:", lista_clientes)
+        filtro_cliente = st.selectbox("Filtrar por Cliente:", lista_clientes)
     with c2:
         lista_modelos = ["Todos"] + sorted(df_dir['Modelo'].dropna().astype(str).unique())
-        filtro_modelo = st.selectbox("⚙️ Filtrar por Modelo:", lista_modelos)
+        filtro_modelo = st.selectbox("Filtrar por Modelo:", lista_modelos)
     with c3:
-        filtro_equipo = st.text_input("🔢 Número de Equipo o Serial:")
+        filtro_equipo = st.text_input("Número de Equipo o Serial:")
 
     # Aplicar los filtros
     df_filtrado = df_dir.copy()
@@ -579,53 +657,64 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
 
     st.markdown("---")
     
-    # --- PANTALLA DIVIDIDA: TABLA A LA IZQUIERDA, TARJETA A LA DERECHA ---
-    col_tabla, col_tarjeta = st.columns([2, 1])
-
-    with col_tabla:
-        st.markdown("### 📋 Resultados de Búsqueda")
-        columnas_ver = ['equipo', 'Tercero', col_ubi_dir, 'Modelo']
-        st.dataframe(df_filtrado[columnas_ver], use_container_width=True, hide_index=True)
+    # --- 4. LISTA DE EQUIPOS TIPO "CORTINA" (ACORDEÓN) ---
+    if df_filtrado.empty:
+        st.warning("No se encontraron equipos con los filtros aplicados.")
+    else:
+        st.markdown(f"### Resultados de Búsqueda ({len(df_filtrado)} equipos)")
         
-        buffer_dir = io.BytesIO()
-        with pd.ExcelWriter(buffer_dir, engine='xlsxwriter') as writer:
-            df_filtrado[columnas_ver].to_excel(writer, sheet_name='Directorio', index=False)
-        st.download_button("📥 Descargar Tabla Filtrada", buffer_dir.getvalue(), "Directorio_Filtrado.xlsx", "application/vnd.ms-excel")
-
-    with col_tarjeta:
-        st.markdown("### 🪪 Tarjeta de Equipo")
-        if not df_filtrado.empty:
-            equipo_seleccionado = st.selectbox("👉 Selecciona el equipo para ver el detalle:", df_filtrado['equipo'].astype(str).unique())
+        for idx, row in df_filtrado.iterrows():
+            equipo = str(row['equipo']).strip()
+            tercero = str(row.get('Tercero', 'Sin Cliente'))
+            sucursal = str(row.get(col_ubi_dir, 'Sin Sucursal'))
+            modelo = str(row.get('Modelo', 'Sin Modelo'))
+            estado = row.get('Categoria_Estado', '🟢 Sin Novedad')
             
-            # Extraer los datos exactos del equipo seleccionado
-            datos_equipo = df_filtrado[df_filtrado['equipo'].astype(str) == equipo_seleccionado].iloc[0]
+            posibles_nombres = [c for c in df_filtrado.columns if 'serial' in str(c).lower() or 'serie' in str(c).lower() or 'chasis' in str(c).lower()]
+            columna_serial_real = posibles_nombres[0] if posibles_nombres else None
+            serial = row.get(columna_serial_real, 'No registrado') if columna_serial_real else 'No encontrado'
             
-            with st.container(border=True):
-                st.info(f"#### Equipo: {datos_equipo['equipo']}")
-                st.write(f"**🏢 Cliente:** {datos_equipo.get('Tercero', 'No registrado')}")
-                st.write(f"**📍 Ubicación:** {datos_equipo.get(col_ubi_dir, 'No registrada')}")
-                st.write(f"**⚙️ Modelo:** {datos_equipo.get('Modelo', 'No registrado')}")
+            horometro = row.get('Horometro Actual', 'No registrado')
+            horometro_txt = horometro if pd.notna(horometro) else 'No registrado'
+            
+            # TÍTULO ESTILIZADO CON DIVISOR
+            titulo_cortina = f"Equipo {equipo} {"&nbsp;"*40} | {"&nbsp;"*40} {estado}"
+            
+            with st.expander(titulo_cortina):
                 
-                # --- BUSCADOR INTELIGENTE DE LA COLUMNA SERIAL ---
-                posibles_nombres = [c for c in df_filtrado.columns if 'serial' in str(c).lower() or 'serie' in str(c).lower() or 'chasis' in str(c).lower()]
-                columna_serial_real = posibles_nombres[0] if posibles_nombres else None
+                # Distribución de la información interna
+                col_izq, col_med, col_der = st.columns(3)
                 
-                serial = datos_equipo.get(columna_serial_real, 'No registrado') if columna_serial_real else 'Columna no encontrada'
-                st.write(f"**🔢 Serial:** {serial}")
+                with col_izq:
+                    st.write(f"**Cliente:** {tercero}")
+                    st.write(f"**Ubicación:** {sucursal}")
                 
-                horometro = datos_equipo.get('Horometro Actual', 'No registrado')
-                if pd.notna(horometro):
-                    st.write(f"**⏱️ Horómetro:** {horometro}")
-                else:
-                    st.write("**⏱️ Horómetro:** No registrado")
-
+                with col_med:
+                    st.write(f"**Modelo:** {modelo}")
+                    st.write(f"**Serial:** {serial}")
+                
+                with col_der:
+                    st.write(f"**Horómetro:** {horometro_txt}")
+                    link = row.get('Link_Ficha', '')
+                    if pd.notna(link) and str(link).strip() != "":
+                        st.link_button("📄 ABRIR FICHA DRIVE", str(link).strip(), type="primary", use_container_width=True)
+                    else:
+                        st.caption("⚠️ Sin ficha en Drive")
+                
                 st.markdown("---")
                 
-                # --- BOTÓN PARA ABRIR LA FICHA DIRECTAMENTE ---
-                link = datos_equipo.get('Link_Ficha', '')
-                if pd.notna(link) and str(link).strip() != "":
-                    st.link_button("📄 ABRIR FICHA TÉCNICA", str(link).strip(), type="primary", use_container_width=True)
+                # Historial real de solicitudes filtradas por equipo
+                st.write("**Historial de Novedades y Solicitudes (SAMM)**")
+                if not df_solicitudes_raw.empty:
+                    df_nov_eq = df_solicitudes_raw[df_solicitudes_raw['Equipo'].astype(str).str.strip() == equipo].drop(columns=['Equipo'])
+                    
+                    if not df_nov_eq.empty:
+                        st.dataframe(
+                            df_nov_eq,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.info("🟢 Sin solicitudes ni novedades registradas para este equipo.")
                 else:
-                    st.warning("⚠️ No hay ficha técnica asociada. Sube el archivo a Drive y actualiza el Excel 'Fichas_Drive.xlsx'.")
-        else:
-            st.warning("No se encontraron equipos con los filtros aplicados.")
+                    st.info("🟢 Sin solicitudes ni novedades registradas para este equipo.")
