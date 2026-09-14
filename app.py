@@ -137,9 +137,9 @@ if 'df_base_maestra' not in st.session_state:
         st.stop()
 
 # =====================================================================
-# 🟩 MÓDULO 1: GESTIÓN DE CRONOGRAMAS 
+# 📅 MÓDULO 3: GESTIÓN DE CRONOGRAMAS 
 # =====================================================================
-if menu_seleccionado == "📅 1. Gestión de Cronogramas":
+elif menu_seleccionado == "📅 3. Gestión de Cronogramas":
     st.title("📅 Gestión de Cronogramas y Auditoría")
     st.markdown("---")
     
@@ -157,20 +157,24 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                 df_crudo = limpiar_reporte_samm(archivo_samm)
                 df_crudo['Equipo'] = df_crudo['Equipo'].apply(normalizar_id_universal)
                 
+                # 💡 NUEVO: Traemos el Tercero real de la BD al dataframe para comparar visualmente
+                df_crudo['Tercero_BD'] = df_crudo['Equipo'].apply(lambda x: dict_tercero.get(str(x).strip(), "SIN ASIGNAR EN BD"))
+                
                 if 'equipos_ignorados' not in st.session_state:
                     st.session_state['equipos_ignorados'] = set()
 
-                def auditar_contra_maestro(row):
+                def auditar_contrato_vs_bd(row):
                     equipo = str(row['Equipo']).strip() 
                     if equipo in st.session_state['equipos_ignorados']: return "VERDE"
-                    cliente_samm = str(row['Cliente']).upper().strip()
-                    tercero_maestro_raw = dict_tercero.get(equipo)
-                    if pd.isna(tercero_maestro_raw) or str(tercero_maestro_raw).strip() == "" or str(tercero_maestro_raw).strip().upper() in ["NAN", "SIN_ASIGNAR"]: return "VERDE" 
-                    tercero_maestro = str(tercero_maestro_raw).upper().strip()
-                    if cliente_samm not in tercero_maestro and tercero_maestro not in cliente_samm: return "ROJO" 
+                    
+                    contrato_excel = str(row['Cliente']).upper().strip()
+                    tercero_bd = str(row['Tercero_BD']).upper().strip()
+                    
+                    if tercero_bd in ["NAN", "SIN ASIGNAR EN BD", "NONE", ""]: return "VERDE" 
+                    if contrato_excel not in tercero_bd and tercero_bd not in contrato_excel: return "ROJO" 
                     return "VERDE"
                     
-                df_crudo['Alerta_Auditoria'] = df_crudo.apply(auditar_contra_maestro, axis=1)
+                df_crudo['Alerta_Auditoria'] = df_crudo.apply(auditar_contrato_vs_bd, axis=1)
 
                 def optimizar_fechas_por_sucursal_y_cupos(df):
                     df_opt = df.copy()
@@ -236,21 +240,29 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                 if equipo_buscado != "Seleccionar...":
                     df_equipo = df_limpio[df_limpio['Equipo'] == equipo_buscado].sort_values(by="Fecha_Visita")
                     c1, c2, c3 = st.columns(3)
-                    c1.info(f"**🏢 Cliente:**\n{df_equipo['Cliente'].iloc[0]}")
+                    c1.info(f"**🏢 Cliente (Contrato):**\n{df_equipo['Cliente'].iloc[0]}")
                     c2.info(f"**📍 Ubicación:**\n{df_equipo['Sucursal'].iloc[0]}")
                     c3.info(f"**🔧 Visitas:**\n{len(df_equipo)}")
                     st.dataframe(df_equipo[['Fecha_Visita', 'Mantenimiento', 'OT', 'Estado']], use_container_width=True, hide_index=True)
             
             with tab_datos:
-                st.subheader("Auditoría Global de la Flota (Filtro Comercial)")
+                st.subheader("Auditoría Global de la Flota (Contrato vs Base de Datos)")
                 df_anomalias = df_limpio[df_limpio['Alerta_Auditoria'] == 'ROJO'].drop_duplicates(subset=['Equipo', 'Cliente']).copy()
+                
                 if not df_anomalias.empty:
-                    st.warning(f"🚨 Hay {len(df_anomalias)} anomalías en toda la flota (Cliente en SAMM vs Tercero en Maestro).")
-                    st.dataframe(df_anomalias[['Equipo', 'Cliente', 'Sucursal', 'Estado', 'Mantenimiento']], hide_index=True, use_container_width=True)
+                    st.warning(f"🚨 Hay {len(df_anomalias)} anomalías: El Contrato programado no coincide con el Tercero real en la Base de Datos.")
+                    
+                    # 💡 NUEVO: Formateamos la tabla para que el error sea evidente
+                    df_mostrar = df_anomalias[['Equipo', 'Cliente', 'Tercero_BD', 'Sucursal', 'Estado', 'Mantenimiento']].copy()
+                    df_mostrar.rename(columns={'Cliente': 'Contrato Programado (Excel)', 'Tercero_BD': 'Tercero Real (BD)'}, inplace=True)
+                    
+                    st.dataframe(df_mostrar, hide_index=True, use_container_width=True)
+                    
                     buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer: df_anomalias.to_excel(writer, sheet_name='Anomalias', index=False)
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer: df_mostrar.to_excel(writer, sheet_name='Anomalias', index=False)
                     st.download_button("📥 Descargar Reporte Global", buffer.getvalue(), "Anomalias.xlsx", "application/vnd.ms-excel", type="primary")
-                else: st.success("✅ Toda la flota operativa coincide correctamente con el Excel Maestro.")
+                else: 
+                    st.success("✅ Toda la flota programada coincide correctamente con la Base de Datos de SAMM.")
                 st.write("---")
                 
                 st.subheader("📌 Equipos con Múltiples Visitas el Mismo Día")
@@ -264,14 +276,32 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
     
                 st.subheader("🚨 Equipos Sin Cronograma de Mantenimiento")
                 equipos_en_samm = df_limpio['Equipo'].unique()
-                df_faltantes = df_maestro_actual[~df_maestro_actual['equipo_clean'].isin(equipos_en_samm)]
+                
+                # 1. Obtenemos los faltantes originales de la base maestra
+                df_faltantes = df_maestro_actual[~df_maestro_actual['equipo_clean'].isin(equipos_en_samm)].copy()
+                
+                # 2. PURGA DE EQUIPOS VENDIDOS: Conectamos a SAMM para ignorarlos
+                try:
+                    conn = st.connection("sw_dino", type="sql")
+                    try:
+                        df_estados = conn.query("SELECT equipo, estadoEquipo AS Estado_Fisico FROM view_equ_equipo", ttl=3600)
+                    except:
+                        df_estados = conn.query("SELECT equipo, equ_estadoEquipo_estadoEquipo AS Estado_Fisico FROM view_equ_equipo", ttl=3600)
+                    
+                    # Identificamos cuáles dicen "vendido"
+                    equipos_vendidos = df_estados[df_estados['Estado_Fisico'].astype(str).str.contains('vendido', case=False, na=False)]['equipo'].astype(str).str.strip().tolist()
+                    
+                    # Los eliminamos del dataframe de faltantes
+                    df_faltantes = df_faltantes[~df_faltantes['equipo_clean'].isin(equipos_vendidos)]
+                except Exception as e:
+                    pass
                 
                 col_mod = 'Modelo' if 'Modelo' in df_faltantes.columns else df_faltantes.columns[0]
                 df_faltantes_mostrar = df_faltantes[['equipo_clean', 'Tercero', col_ubi, col_mod, 'Horometro Actual']].dropna(subset=['Tercero'])
                 df_faltantes_mostrar.rename(columns={'equipo_clean': 'equipo'}, inplace=True)
                 
                 if not df_faltantes_mostrar.empty:
-                    st.warning(f"{len(df_faltantes_mostrar)} equipos sin visita programada.")
+                    st.warning(f"{len(df_faltantes_mostrar)} equipos activos en BD sin visita programada.")
                     st.dataframe(df_faltantes_mostrar, hide_index=True)
                     df_word = df_faltantes_mostrar.drop(columns=['Horometro Actual'], errors='ignore')
                     def generar_word_faltantes(df):
@@ -314,7 +344,7 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                                 nuevas_filas = []
                                 for fecha in fechas_ingresadas:
                                     if fecha and fecha.strip() != "":
-                                        nuevas_filas.append({'Equipo': eq_manual, 'Cliente': cli_destino.upper().strip(), 'Sucursal': sucursal_eq, 'Fecha_Visita': fecha.strip(), 'Estado': 'PROGRAMADO MANUAL', 'Mantenimiento': 'PREVENTIVO', 'Color_Semantico': 'Amarillo', 'Alerta_Auditoria': 'VERDE'})
+                                        nuevas_filas.append({'Equipo': eq_manual, 'Cliente': cli_destino.upper().strip(), 'Sucursal': sucursal_eq, 'Fecha_Visita': fecha.strip(), 'Estado': 'PROGRAMADO MANUAL', 'Mantenimiento': 'PREVENTIVO', 'Color_Semantico': 'Amarillo', 'Alerta_Auditoria': 'VERDE', 'Tercero_BD': info_eq.iloc[1]})
                                 df_nuevas = pd.DataFrame(nuevas_filas)
                                 st.session_state['df_master'] = pd.concat([st.session_state['df_master'], df_nuevas], ignore_index=True)
                                 st.success(f"✅ ¡Equipo {eq_manual} inyectado exitosamente al contrato {cli_destino.upper()}!")
@@ -331,18 +361,23 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                         if op.replace("👀 ", "") == st.session_state['ultimo_cliente']:
                             indice_guardado = i
                             break
-                cliente_raw = st.selectbox("Cliente:", opciones_selector, index=indice_guardado)
+                cliente_raw = st.selectbox("Cliente (Contrato):", opciones_selector, index=indice_guardado)
                 cliente_seleccionado = cliente_raw.replace("👀 ", "")
                 st.session_state['ultimo_cliente'] = cliente_seleccionado
                 df_filtrado = df_limpio[df_limpio['Cliente'] == cliente_seleccionado]
                 alertas_rojas = df_filtrado[df_filtrado['Alerta_Auditoria'] == 'ROJO']
                 
                 if not alertas_rojas.empty:
-                    st.warning("👀 REVISIÓN SUGERIDA: Conflicto entre Contrato SAMM y Tercero Maestro.")
-                    df_alertas_cli = alertas_rojas[['Equipo', 'Cliente', 'Sucursal']].drop_duplicates().copy()
+                    st.warning("👀 REVISIÓN SUGERIDA: Conflicto entre Contrato Programado y Tercero en BD.")
+                    
+                    # 💡 NUEVO: Interfaz de reasignación con cara a cara
+                    df_alertas_cli = alertas_rojas[['Equipo', 'Cliente', 'Tercero_BD', 'Sucursal']].drop_duplicates().copy()
+                    df_alertas_cli.rename(columns={'Cliente': 'Contrato Actual', 'Tercero_BD': 'Tercero Sugerido (BD)'}, inplace=True)
                     df_alertas_cli.insert(0, '✅ Seleccionar', False)
-                    df_editado_cli = st.data_editor(df_alertas_cli, hide_index=True, use_container_width=True, disabled=['Equipo', 'Cliente', 'Sucursal'])
+                    
+                    df_editado_cli = st.data_editor(df_alertas_cli, hide_index=True, use_container_width=True, disabled=['Equipo', 'Contrato Actual', 'Tercero Sugerido (BD)', 'Sucursal'])
                     df_seleccionados = df_editado_cli[df_editado_cli['✅ Seleccionar'] == True]
+                    
                     if not df_seleccionados.empty:
                         equipos_afectados = df_seleccionados['Equipo'].tolist()
                         def ejecutar_reasignacion(nuevo_cliente_destino):
@@ -351,11 +386,10 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                             def re_auditar(row):
                                 eq_s = str(row['Equipo']).strip()
                                 if eq_s in st.session_state.get('equipos_ignorados', set()): return "VERDE"
-                                cliente_samm = str(row['Cliente']).upper().strip()
-                                tercero_maestro_raw = dict_tercero.get(eq_s)
-                                if pd.isna(tercero_maestro_raw) or str(tercero_maestro_raw).strip() == "" or str(tercero_maestro_raw).strip().upper() in ["NAN", "SIN_ASIGNAR"]: return "VERDE"
-                                tercero_maestro = str(tercero_maestro_raw).upper().strip()
-                                if cliente_samm not in tercero_maestro and tercero_maestro not in cliente_samm: return "ROJO"
+                                contrato_excel = str(row['Cliente']).upper().strip()
+                                tercero_bd = str(row['Tercero_BD']).upper().strip()
+                                if tercero_bd in ["NAN", "SIN ASIGNAR EN BD", "NONE", ""]: return "VERDE"
+                                if contrato_excel not in tercero_bd and tercero_bd not in contrato_excel: return "ROJO"
                                 return "VERDE"
                             st.session_state['df_master']['Alerta_Auditoria'] = st.session_state['df_master'].apply(re_auditar, axis=1)
                             st.rerun()
@@ -401,11 +435,10 @@ if menu_seleccionado == "📅 1. Gestión de Cronogramas":
                         def re_auditar_sep(row):
                             eq_s = str(row['Equipo']).strip()
                             if eq_s in st.session_state.get('equipos_ignorados', set()): return "VERDE"
-                            cliente_samm = str(row['Cliente']).upper().strip()
-                            tercero_maestro_raw = dict_tercero.get(eq_s)
-                            if pd.isna(tercero_maestro_raw) or str(tercero_maestro_raw).strip() == "" or str(tercero_maestro_raw).strip().upper() in ["NAN", "SIN_ASIGNAR"]: return "VERDE"
-                            tercero_maestro = str(tercero_maestro_raw).upper().strip()
-                            if cliente_samm not in tercero_maestro and tercero_maestro not in cliente_samm: return "ROJO"
+                            contrato_excel = str(row['Cliente']).upper().strip()
+                            tercero_bd = str(row['Tercero_BD']).upper().strip()
+                            if tercero_bd in ["NAN", "SIN ASIGNAR EN BD", "NONE", ""]: return "VERDE"
+                            if contrato_excel not in tercero_bd and tercero_bd not in contrato_excel: return "ROJO"
                             return "VERDE"
                         st.session_state['df_master']['Alerta_Auditoria'] = st.session_state['df_master'].apply(re_auditar_sep, axis=1)
                         st.rerun()
@@ -547,7 +580,7 @@ elif menu_seleccionado == "🛢️ 2. Predictivo de Horómetros":
         columnas_ver = ['Equipo', 'Tercero', 'Horometro Actual', 'Horas_Faltantes', 'Tipo_Mantenimiento', 'Alerta', 'Estado_Insumos']
         st.dataframe(df_alertas[columnas_ver], hide_index=True)
         buffer_alertas = io.BytesIO()
-        with pd.ExcelWriter(buffer_alertas, engine='xlsxwriter') as writer: df_alertas[columnas_ver].to_excel(writer, sheet_name='Solicitud_Filtros', index=False)
+        with pd.ExcelWriter(buffer_alertas, engine='xlsxwriter') as writer: df_alertas[columnas_ver].to_excel(writer, sheet_name='Solicitud_FiltroEGMs', index=False)
         st.download_button(label="📥 Descargar Reporte para Compras (Excel)", data=buffer_alertas.getvalue(), file_name="Solicitud_Insumos_Mantenimiento.xlsx", mime="application/vnd.ms-excel")
         st.markdown("---")
         st.subheader("⚙️ Gestión de Estado del Mantenimiento")
@@ -674,9 +707,9 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
     c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
     
     c_kpi1.metric(
-        label="Base Maestra", 
-        value=f"🚜 {total_equipos} equipos", 
-        delta="Total Flota Activa",
+        label="Fuera de Servicio", 
+        value=f"⚪ {fuera_servicio} equipos", 
+        delta=f"{pct_fuera:.1f}% inactiva",
         delta_color="off"
     )
     
@@ -695,33 +728,74 @@ elif menu_seleccionado == "🚜 3. Directorio de Flota":
     )
 
     c_kpi4.metric(
-        label="Fuera de Servicio", 
-        value=f"⚪ {fuera_servicio} equipos", 
-        delta=f"{pct_fuera:.1f}% inactiva",
+        label="Base Maestra", 
+        value=f"🚜 {total_equipos} equipos", 
+        delta="Total Flota Activa",
         delta_color="off"
     )
-    
     st.markdown("---")
 
-    # --- 4. BUSCADOR SEGMENTADO ---
+  # --- 4. BUSCADOR SEGMENTADO ---
     st.subheader("🔍 Buscador Segmentado")
+    
+    # FILA 1: Los 3 buscadores principales (Grandes, siempre visibles)
     c1, c2, c3 = st.columns(3)
     
     with c1:
         lista_clientes = ["Todos"] + sorted(df_dir['Tercero'].dropna().astype(str).unique())
-        filtro_cliente = st.selectbox("Filtrar por Cliente:", lista_clientes)
+        filtro_cliente = st.selectbox("Filtrar por Cliente:", lista_clientes, key="cli_global")
+        
     with c2:
-        lista_modelos = ["Todos"] + sorted(df_dir['Modelo'].dropna().astype(str).unique())
-        filtro_modelo = st.selectbox("Filtrar por Modelo:", lista_modelos)
+        lista_modelos_global = ["Todos"] + sorted(df_dir['Modelo'].dropna().astype(str).unique())
+        filtro_modelo_global = st.selectbox("Filtrar por Modelo (Global):", lista_modelos_global, key="mod_global")
+        
     with c3:
-        filtro_equipo = st.text_input("Número de Equipo o Serial:")
+        filtro_equipo = st.text_input("Equipo o Serial:", key="eq_global")
 
-    # Aplicar los filtros
+    # FILA 2: Sub-filtros (Más pequeños, solo visibles si hay cliente)
+    filtro_sucursal = "Todas"
+    filtro_modelo_cliente = "Todos"
+    
+    if filtro_cliente != "Todos":
+        # Usamos 4 columnas pero solo llenamos 2 para que sean "más pequeños"
+        cs1, cs2, cs3, cs4 = st.columns(4)
+        
+        with cs1:
+            sucursales_cliente = df_dir[df_dir['Tercero'].astype(str) == filtro_cliente][col_ubi_dir]
+            lista_sucursales = ["Todas"] + sorted(sucursales_cliente.dropna().astype(str).unique())
+            filtro_sucursal = st.selectbox("↳ Sucursal del Cliente:", lista_sucursales, key="suc_cliente")
+            
+        with cs2:
+            # Modelos exclusivos de este cliente (y sucursal si aplica)
+            df_temp_modelos = df_dir[df_dir['Tercero'].astype(str) == filtro_cliente]
+            if filtro_sucursal != "Todas":
+                df_temp_modelos = df_temp_modelos[df_temp_modelos[col_ubi_dir].astype(str) == filtro_sucursal]
+                
+            lista_modelos_cli = ["Todos"] + sorted(df_temp_modelos['Modelo'].dropna().astype(str).unique())
+            filtro_modelo_cliente = st.selectbox("↳ Modelo del Cliente:", lista_modelos_cli, key="mod_cliente")
+
+    # --- Aplicar los filtros ---
     df_filtrado = df_dir.copy()
+    
+    # 1. Filtro de Cliente
     if filtro_cliente != "Todos":
         df_filtrado = df_filtrado[df_filtrado['Tercero'].astype(str) == filtro_cliente]
-    if filtro_modelo != "Todos":
-        df_filtrado = df_filtrado[df_filtrado['Modelo'].astype(str) == filtro_modelo]
+        
+    # 2. Filtro de Sucursal (Solo si aplica)
+    if filtro_sucursal != "Todas":
+        df_filtrado = df_filtrado[df_filtrado[col_ubi_dir].astype(str) == filtro_sucursal]
+        
+    # 3. Filtro de Modelo (Inteligente)
+    if filtro_cliente != "Todos":
+        # Si estamos dentro de un cliente, manda el filtro pequeño de abajo
+        if filtro_modelo_cliente != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['Modelo'].astype(str) == filtro_modelo_cliente]
+    else:
+        # Si estamos en la vista global, manda el filtro grande de arriba
+        if filtro_modelo_global != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['Modelo'].astype(str) == filtro_modelo_global]
+            
+    # 4. Filtro de Equipo / Serial
     if filtro_equipo:
         df_filtrado = df_filtrado[df_filtrado['equipo'].astype(str).str.contains(filtro_equipo, case=False)]
 
