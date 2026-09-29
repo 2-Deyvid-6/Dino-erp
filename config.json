@@ -1,0 +1,27 @@
+{
+    "flota_activa": ["UIS27G", "JWX35H", "QOP268", "EHT21G", "PRY689", "PWK765", "TZL531", "SZK742", "LGU981"],
+    "palabras_excluidas_logistica": ["cartagena", "ajover", "bogota", "altipal", "cerete", "serete", "soberana"],
+    "mapa_tecnicos": {
+        "TECNICO.10": "Ariel Ortega",
+        "TECNICO.14": "Benjamin Avila",
+        "TECNICO.01": "Christian Gamboa",
+        "TECNICO.06": "Cristian Reyes",
+        "TECNICO.13": "Edgar Solano",
+        "TECNICO.05": "German Lechuga / Yoiner Hurtado",
+        "TECNICO.08": "Isaac Mariota / Santiago Pinto",
+        "TECNICO.07": "Wilfram Guerrero",
+        "TECNICO.11": "Wiliam Guerra",
+        "TECNICO.02": "Martin Suarez"
+    },
+    "diccionario_flota": {
+        "UIS27G": {"tipo": "Moto", "emoji": "🏍️"},
+        "JWX35H": {"tipo": "Moto", "emoji": "🏍️"},
+        "QOP268": {"tipo": "Van", "emoji": "🚐"},
+        "EHT21G": {"tipo": "Moto", "emoji": "🏍️"},
+        "TZL531": {"tipo": "Cisterna", "emoji": "🚛"},
+        "PRY689": {"tipo": "Van", "emoji": "🚐"},
+        "PWK765": {"tipo": "Van", "emoji": "🚐"},
+        "SZK742": {"tipo": "Grua", "emoji": "🚛"},
+        "LGU981": {"tipo": "Cisterna", "emoji": "🚛"}
+    }
+}
