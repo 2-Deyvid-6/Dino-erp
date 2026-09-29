@@ -4,97 +4,72 @@ import numpy as np
 def limpiar_reporte_samm(ruta_archivo):
     df_raw = pd.read_excel(ruta_archivo, header=None)
     
-    datos_limpios = []
+    # 1. Variables de memoria
+    cliente_actual, nit_actual, ciudad_global_actual, fecha_actual = "DESCONOCIDO", "NO REGISTRA", "NO REGISTRA", "DESCONOCIDA"
+    header_idx = -1
     
-    # Memoria RAM del escáner (Contexto actual)
-    cliente_actual = "DESCONOCIDO"
-    fecha_actual = "DESCONOCIDA"
-    nit_actual = "NO REGISTRA" # ¡NUEVO! Memoria para el NIT
-    ciudad_global_actual = "NO REGISTRA" # ¡NUEVO! Memoria para la Ciudad del cliente
-    
-    col_idx = {"equipo": -1, "visita": -1, "ot": -1, "estado": -1, "sucursal": -1, "ciudad": -1}
-    
-    # Lista negra de basura
-    palabras_ignoradas = ('EQUIPO', 'CLIENTE:', 'NIT:', 'CIUDAD:', 'DIRECCION:', 'CONTRATO', 'FECHA', 'NAN')
-    
-    # Escáner continuo (Lee el 100% del documento)
-    for index, row in df_raw.iterrows():
-        valores_meta = [str(x).strip() for x in row.values if pd.notna(x)]
-        if not valores_meta:
-            continue
-            
-        # 1. Detección de Metadatos
-        if "CLIENTE:" in valores_meta:
-            try: idx = valores_meta.index("CLIENTE:"); cliente_actual = valores_meta[idx + 1]
-            except: pass
-            
-        # ¡NUEVO! Atrapamos el NIT y la CIUDAD global
-        if "NIT:" in valores_meta:
-            try: idx = valores_meta.index("NIT:"); nit_actual = valores_meta[idx + 1]
-            except: pass
-        if "CIUDAD:" in valores_meta:
-            try: idx = valores_meta.index("CIUDAD:"); ciudad_global_actual = valores_meta[idx + 1]
-            except: pass
-                
-        # 2. Detección de cambio de Fecha global
-        for val in valores_meta:
-            if val.startswith("Fecha Visita:"):
-                fecha_actual = val.replace("Fecha Visita:", "").strip()
-                
-        # 3. Calibración del Radar
-        if "Equipo" in valores_meta and ("Sucursal" in valores_meta or "Visita" in valores_meta):
-            for i, val in enumerate(row.values):
-                val_str = str(val).strip()
-                if val_str == "Equipo": col_idx["equipo"] = i
-                elif val_str == "Visita": col_idx["visita"] = i
-                elif val_str == "OT": col_idx["ot"] = i
-                elif val_str == "Estado": col_idx["estado"] = i
-                elif val_str == "Sucursal": col_idx["sucursal"] = i
-                elif val_str == "Ciudad": col_idx["ciudad"] = i 
-            continue
-            
-        # 4. Cosecha de Datos de los Equipos
-        if col_idx["equipo"] != -1:
-            col0 = str(row.iloc[col_idx["equipo"]]).strip() if col_idx["equipo"] < len(row) else ""
-            
-            if col0 and not any(col0.upper().startswith(p) for p in palabras_ignoradas):
-                equipo = col0
-                visita = str(row.iloc[col_idx["visita"]]).strip() if col_idx["visita"] != -1 and pd.notna(row.iloc[col_idx["visita"]]) else ""
-                ot = str(row.iloc[col_idx["ot"]]).strip() if col_idx["ot"] != -1 and pd.notna(row.iloc[col_idx["ot"]]) else "sin crear"
-                estado = str(row.iloc[col_idx["estado"]]).strip() if col_idx["estado"] != -1 and pd.notna(row.iloc[col_idx["estado"]]) else "Programada"
-                sucursal = str(row.iloc[col_idx["sucursal"]]).strip() if col_idx["sucursal"] != -1 and pd.notna(row.iloc[col_idx["sucursal"]]) else ""
-                ciudad = str(row.iloc[col_idx["ciudad"]]).strip() if col_idx["ciudad"] != -1 and pd.notna(row.iloc[col_idx["ciudad"]]) else ""
-                
-                if ot.lower() == 'nan': ot = 'sin crear'
-                if estado.lower() == 'nan': estado = 'Programada'
-                if sucursal.lower() == 'nan' or sucursal.lower() == 'sin crear': sucursal = ''
-                if ciudad.lower() == 'nan': ciudad = ''
-                
-                datos_limpios.append({
-                    "Cliente": cliente_actual,
-                    "NIT": nit_actual, # ¡NUEVO! Guardamos en tabla
-                    "Ciudad_Global": ciudad_global_actual, # ¡NUEVO! Guardamos en tabla
-                    "Fecha_Visita": fecha_actual,
-                    "Equipo": equipo,
-                    "Mantenimiento": visita,
-                    "OT": ot,
-                    "Estado": estado,
-                    "Sucursal": sucursal,
-                    "Ciudad": ciudad
-                })
-
-    df_final = pd.DataFrame(datos_limpios)
-    
-    # Asignación de KPIs
-    if not df_final.empty:
-        condiciones = [
-            (df_final['OT'] == "sin crear"),
-            (df_final['OT'].str.startswith("OTT -")) & (df_final['Estado'] == "Programada"),
-            (df_final['OT'].str.startswith("OTT -")) & (df_final['Estado'].isin(["Cerrada", "Finalizada"]))
-        ]
-        opciones = ["Rojo", "Amarillo", "Verde"]
-        df_final['Color_Semantico'] = np.select(condiciones, opciones, default="Desconocido")
-    else:
-        df_final['Color_Semantico'] = []
+    # 2. ESCANEO RÁPIDO: Solo buscamos en las primeras 100 filas (para encontrar metadatos y cabeceras)
+    for idx, row in df_raw.head(100).iterrows():
+        valores = [str(x).strip() for x in row.values if pd.notna(x)]
+        if not valores: continue
         
-    return df_final
+        # Atrapamos Metadatos
+        if "CLIENTE:" in valores: cliente_actual = valores[valores.index("CLIENTE:") + 1] if len(valores) > valores.index("CLIENTE:") + 1 else cliente_actual
+        if "NIT:" in valores: nit_actual = valores[valores.index("NIT:") + 1] if len(valores) > valores.index("NIT:") + 1 else nit_actual
+        if "CIUDAD:" in valores: ciudad_global_actual = valores[valores.index("CIUDAD:") + 1] if len(valores) > valores.index("CIUDAD:") + 1 else ciudad_global_actual
+        
+        for val in valores:
+            if val.startswith("Fecha Visita:"): fecha_actual = val.replace("Fecha Visita:", "").strip()
+            
+        # Detectamos la fila donde empiezan realmente las columnas de datos
+        if "Equipo" in valores and ("Sucursal" in valores or "Visita" in valores):
+            header_idx = idx
+            break # DETENEMOS el bucle aquí. Cero iteraciones para el resto de los datos.
+
+    if header_idx == -1:
+        # Falla segura si el documento no tiene el formato esperado
+        df_vacio = pd.DataFrame(columns=['Cliente', 'NIT', 'Ciudad_Global', 'Fecha_Visita', 'Equipo', 'Mantenimiento', 'OT', 'Estado', 'Sucursal', 'Ciudad', 'Color_Semantico'])
+        return df_vacio
+        
+    # 3. VECTORIZACIÓN MASIVA (Aquí ocurre la magia de optimización)
+    # Cortamos el DataFrame desde la fila de cabeceras hacia abajo
+    df_data = df_raw.iloc[header_idx + 1:].copy()
+    df_data.columns = df_raw.iloc[header_idx].astype(str).str.strip()
+    
+    # Renombrar dinámicamente columnas clave si existen (Manejo de mayúsculas/minúsculas)
+    cols_map = {c: c.capitalize() for c in df_data.columns if str(c).lower() in ['equipo', 'visita', 'ot', 'estado', 'sucursal', 'ciudad']}
+    df_data.rename(columns=cols_map, inplace=True)
+    if 'Ot' in df_data.columns: df_data.rename(columns={'Ot': 'OT'}, inplace=True)
+    
+    # 4. LIMPIEZA DE BASURA SIN BUCLES (Filtros booleanos)
+    df_data = df_data.dropna(subset=['Equipo'])
+    palabras_basura = ('EQUIPO', 'CLIENTE:', 'NIT:', 'CIUDAD', 'DIRECCION', 'CONTRATO', 'FECHA', 'NAN')
+    df_data = df_data[~df_data['Equipo'].astype(str).str.upper().str.startswith(palabras_basura)]
+    
+    # 5. RELLENO DE DATOS Y NORMALIZACIÓN (Vectorizado)
+    for col, default_val in [('OT', 'sin crear'), ('Estado', 'Programada'), ('Sucursal', ''), ('Ciudad', ''), ('Visita', '')]:
+        if col not in df_data.columns: df_data[col] = default_val
+        
+    df_data['OT'] = df_data['OT'].astype(str).replace(['nan', 'NAN', ''], 'sin crear')
+    df_data['Estado'] = df_data['Estado'].astype(str).replace(['nan', 'NAN', ''], 'Programada')
+    df_data['Sucursal'] = df_data['Sucursal'].astype(str).replace(['nan', 'NAN', 'sin crear'], '')
+    df_data['Ciudad'] = df_data['Ciudad'].astype(str).replace(['nan', 'NAN'], '')
+    
+    # 6. INYECCIÓN DE METADATOS GLOBALES
+    df_data['Cliente'] = cliente_actual
+    df_data['NIT'] = nit_actual
+    df_data['Ciudad_Global'] = ciudad_global_actual
+    df_data['Fecha_Visita'] = fecha_actual
+    df_data['Mantenimiento'] = df_data['Visita']
+    
+    # 7. ASIGNACIÓN DE KPIS (Semáforo Vectorizado con np.select)
+    condiciones = [
+        (df_data['OT'] == "sin crear"),
+        (df_data['OT'].astype(str).str.startswith("OTT -", na=False)) & (df_data['Estado'] == "Programada"),
+        (df_data['OT'].astype(str).str.startswith("OTT -", na=False)) & (df_data['Estado'].isin(["Cerrada", "Finalizada"]))
+    ]
+    df_data['Color_Semantico'] = np.select(condiciones, ["Rojo", "Amarillo", "Verde"], default="Desconocido")
+    
+    # Ordenar y retornar columnas requeridas por app.py
+    columnas_finales = ['Cliente', 'NIT', 'Ciudad_Global', 'Fecha_Visita', 'Equipo', 'Mantenimiento', 'OT', 'Estado', 'Sucursal', 'Ciudad', 'Color_Semantico']
+    return df_data[columnas_finales]
