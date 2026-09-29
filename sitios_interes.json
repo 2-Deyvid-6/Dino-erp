@@ -1,0 +1,128 @@
+{
+    "DINOMONTACARGAS": {
+        "tipo": "coordenada",
+        "lat": 10.939532,
+        "lon": -74.836254,
+        "radio": 200.0
+    },
+    "ACESCO MALAMBO": {
+        "tipo": "coordenada",
+        "lat": 10.840796,
+        "lon": -74.759531,
+        "radio": 200.0
+    },
+    "RANSA VOLCANES": {
+        "tipo": "coordenada",
+        "lat": 10.923837,
+        "lon": -74.865243,
+        "radio": 200.0
+    },
+    "PLANTA ZOFIA": {
+        "tipo": "coordenada",
+        "lat": 10.933833,
+        "lon": -74.858453,
+        "radio": 200.0
+    },
+    "RANSA ZOFIA": {
+        "tipo": "coordenada",
+        "lat": 10.929257,
+        "lon": -74.858217,
+        "radio": 200.0
+    },
+    "CCL": {
+        "tipo": "coordenada",
+        "lat": 10.939414,
+        "lon": -74.839771,
+        "radio": 200.0
+    },
+    "ECOS COMBUSTIBLE": {
+        "tipo": "coordenada",
+        "lat": 10.923002,
+        "lon": -74.814967,
+        "radio": 200.0
+    },
+    "BERTOLINI": {
+        "tipo": "coordenada",
+        "lat": 11.029781,
+        "lon": -74.805816,
+        "radio": 50.0
+    },
+    "Diana": {
+        "tipo": "coordenada",
+        "lat": 10.934744,
+        "lon": -74.782764,
+        "radio": 160.0
+    },
+    "MEICO": {
+        "tipo": "coordenada",
+        "lat": 10.954048,
+        "lon": -74.786425,
+        "radio": 70.0
+    },
+    "HARINERA DEL VALLE": {
+        "tipo": "coordenada",
+        "lat": 11.028633,
+        "lon": -74.807285,
+        "radio": 50.0
+    },
+    "MANGUERA Y ACOPLES": {
+        "tipo": "coordenada",
+        "lat": 10.910101,
+        "lon": -74.880873,
+        "radio": 50.0
+    },
+    "VILLA CORDIALIDAD": {
+        "tipo": "coordenada",
+        "lat": 10.940227,
+        "lon": -74.861863,
+        "radio": 100.0
+    },
+    "PARQUE CLAVERIA": {
+        "tipo": "coordenada",
+        "lat": 10.959641,
+        "lon": -74.888227,
+        "radio": 250.0
+    },
+    "PARQUE INDUSTRIAL LA PAZ": {
+        "tipo": "coordenada",
+        "lat": 10.961588,
+        "lon": -74.834591,
+        "radio": 200.0
+    },
+    "NATURMEGA": {
+        "tipo": "coordenada",
+        "lat": 11.024004,
+        "lon": -74.801873,
+        "radio": 50.0
+    },
+    "PARQUE INDUSTIAL ZF LAS CAYENAS": {
+        "tipo": "coordenada",
+        "lat": 10.952533,
+        "lon": -74.90526,
+        "radio": 600.0
+    },
+    "EQUATRO": {
+        "tipo": "coordenada",
+        "lat": 10.99395,
+        "lon": -74.780643,
+        "radio": 50.0
+    },
+    "LLOREDA": {
+        "tipo": "coordenada",
+        "lat": 11.02693,
+        "lon": -74.80914,
+        "radio": 300.0
+    },
+    "GALAPARK": {
+        "tipo": "coordenada",
+        "lat": 10.933133,
+        "lon": -74.850603,
+        "radio": 150.0
+    },
+    "REVISION TECNOMECAMICA CIRCUNVALAR": {
+        "tipo": "coordenada",
+        "lat": 10.923737,
+        "lon": -74.793174,
+        "radio": 150.0
+    }
+}
